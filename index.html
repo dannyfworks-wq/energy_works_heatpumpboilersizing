@@ -367,13 +367,14 @@
     <details class="aiset" id="aiset">
       <summary>⚙ AI settings — only needed when running this as a local file or your own host</summary>
       <div class="aiset-body">
+        <input type="text" id="proxyUrl" placeholder="AI proxy URL — optional (e.g. https://…workers.dev)" autocomplete="off" spellcheck="false">
         <input type="password" id="apiKey" placeholder="Anthropic API key (sk-ant-…)" autocomplete="off" spellcheck="false">
         <select id="aiModel">
           <option value="claude-sonnet-4-6">Claude Sonnet 4.6 — vision, recommended</option>
           <option value="claude-opus-4-8">Claude Opus 4.8 — most capable</option>
           <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 — fast / low cost</option>
         </select>
-        <span class="aiwarn">Your browser calls Anthropic directly with this key — it's held in memory only (never saved, never sent anywhere else), but it is readable in this page, so use a scoped key and don't share the file with a key entered. Inside Claude.ai you don't need a key.</span>
+        <span class="aiwarn">Two ways to run the AI on your own host: (1) a <b>proxy URL</b> — a Cloudflare Worker that holds the key server-side (see <code>proxy/README.md</code>), so no key ever touches this page; or (2) an <b>API key</b> — your browser then calls Anthropic directly (held in memory only, never saved, but readable in this page, so use a scoped key). The proxy URL is saved in this browser only. Inside Claude.ai you need neither.</span>
       </div>
     </details>
 
@@ -1614,25 +1615,37 @@ function setMsg(id,html,cls){ const e=document.getElementById(id); e.className='
 function setVal2(id,v){ const e=document.getElementById(id); if(e) e.value=(v==null||!isFinite(v))?'':(+(+v).toFixed(2)); }
 
 /* ---- Claude API helper ----
-   Two modes:
-   (a) inside Claude.ai artifact: keyless call routed through the app proxy
-   (b) local file / standalone host: user supplies their own key -> direct browser call */
+   Three modes, in priority order:
+   (a) USER_KEY set       -> direct browser call to Anthropic with that key
+   (b) a proxy URL is set -> POST to your proxy (Cloudflare Worker) which holds the
+                             key server-side; works on any public/static host (e.g. GitHub Pages)
+   (c) neither            -> keyless call (only works inside the Claude.ai runtime,
+                             which proxies the request for you)
+   To enable (b) on a public host, deploy proxy/worker.js and set PROXY_URL below
+   (or paste the URL into the "AI proxy URL" box under AI settings). */
+const PROXY_URL = "";   // e.g. "https://hp-sizer-proxy.yourname.workers.dev"  — see proxy/README.md
 let USER_KEY=null;
 let AI_MODEL='claude-sonnet-4-6';
+function getProxyUrl(){
+  try{ const o=(localStorage.getItem('hpsizer_proxy_url')||'').trim(); if(o) return o; }catch(_){}
+  return PROXY_URL;
+}
 async function callClaude(messages){
   const ctrl=new AbortController(); const to=setTimeout(()=>ctrl.abort(),60000);
   try{
     const headers={"Content-Type":"application/json"};
-    const body={max_tokens:1024, messages};
+    const body={max_tokens:1024, model:AI_MODEL, messages};
+    let url="https://api.anthropic.com/v1/messages";
+    const proxy=getProxyUrl();
     if(USER_KEY){
       headers["x-api-key"]=USER_KEY;
       headers["anthropic-version"]="2023-06-01";
       headers["anthropic-dangerous-direct-browser-access"]="true";
-      body.model=AI_MODEL;
-    } else {
-      body.model="claude-sonnet-4-6";   // app-proxy model (inside Claude.ai)
+    } else if(proxy){
+      url=proxy;   // the proxy injects the key + anthropic-version server-side
     }
-    const r=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers,signal:ctrl.signal,body:JSON.stringify(body)});
+    // else: keyless — the Claude.ai runtime proxies this call
+    const r=await fetch(url,{method:"POST",headers,signal:ctrl.signal,body:JSON.stringify(body)});
     clearTimeout(to);
     if(!r.ok){ let d=''; try{ const ej=await r.json(); d=ej && ej.error && ej.error.message ? ': '+ej.error.message : ''; }catch(_){} throw new Error("HTTP "+r.status+d); }
     const data=await r.json();
@@ -1642,22 +1655,32 @@ async function callClaude(messages){
 function parseAIJSON(text){ return JSON.parse(text.replace(/```json/gi,'').replace(/```/g,'').trim()); }
 function aiErrMsg(e){
   const m=(e && e.message) || '';
-  if(/401/.test(m)) return 'API key rejected (401). Check the key under AI settings.';
-  if(/403/.test(m)) return 'API forbidden (403). The key may lack permission for this model.';
+  const proxy=getProxyUrl();
+  if(/401/.test(m)) return proxy ? 'Anthropic rejected the key (401). Check the proxy\'s ANTHROPIC_API_KEY secret.' : 'API key rejected (401). Check the key under AI settings.';
+  if(/403/.test(m)) return proxy ? 'Forbidden (403). The proxy rejected this site\'s origin, or the key lacks access to this model.' : 'API forbidden (403). The key may lack permission for this model.';
   if(/404/.test(m)) return 'Model not found (404). Pick a different model in AI settings.';
   if(/429/.test(m)) return 'Rate limited (429). Wait a moment and retry.';
-  if(/HTTP 5\d\d/.test(m)) return 'Anthropic API server error — try again shortly.';
+  if(/HTTP 5\d\d/.test(m)) return proxy ? 'Proxy / API server error (5xx). Confirm the Worker is deployed and ANTHROPIC_API_KEY is set.' : 'Anthropic API server error — try again shortly.';
   if(/HTTP \d/.test(m)) return 'API error — '+m;
   // no HTTP status -> network / CORS (fetch threw)
+  if(proxy) return 'Couldn\'t reach the AI proxy ('+proxy+'). Confirm the Worker is deployed and the URL is correct.';
   return USER_KEY
     ? 'Couldn\'t reach api.anthropic.com (network/CORS). Confirm you\'re online and the network isn\'t blocking it; hosting the file over http/https is the most reliable.'
-    : 'AI needs credentials here. Running locally? Open <b>⚙ AI settings</b> above and paste your Anthropic API key. Or use the tool inside Claude.ai (no key needed).';
+    : 'AI needs credentials on this host. Open <b>⚙ AI settings</b> and either set a proxy URL (see proxy/README.md) or paste an Anthropic API key. Inside Claude.ai you need neither.';
 }
 
 /* ---- AI settings wiring ---- */
 {
   const k=document.getElementById('apiKey'); if(k) k.addEventListener('input',e=>{ USER_KEY=e.target.value.trim()||null; });
   const m=document.getElementById('aiModel'); if(m) m.addEventListener('change',e=>{ AI_MODEL=e.target.value; });
+  const p=document.getElementById('proxyUrl');
+  if(p){
+    try{ const saved=localStorage.getItem('hpsizer_proxy_url'); if(saved) p.value=saved; }catch(_){}
+    p.addEventListener('input',e=>{
+      const v=e.target.value.trim();
+      try{ if(v) localStorage.setItem('hpsizer_proxy_url',v); else localStorage.removeItem('hpsizer_proxy_url'); }catch(_){}
+    });
+  }
 }
 
 /* ---- helper to push trend load into sizing ---- */
