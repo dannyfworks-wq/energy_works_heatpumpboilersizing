@@ -245,6 +245,8 @@
   .tbtn{background:var(--panel2);border:1px solid var(--line2);color:var(--dim);border-radius:8px;padding:7px 11px;cursor:pointer;
     font-family:var(--mono);font-size:11.5px;transition:.15s;white-space:nowrap}
   .tbtn:hover{border-color:var(--cold);color:var(--cold)}
+  #autoSaveInd{font-family:var(--mono);font-size:11px;color:var(--ok);opacity:0;transition:opacity .6s;white-space:nowrap;pointer-events:none;align-self:center}
+  #autoSaveInd.show{opacity:1;transition:opacity .1s}
 
   .scope{font-family:var(--mono);font-size:9.5px;text-transform:uppercase;letter-spacing:.8px;padding:2px 6px;border-radius:5px;font-weight:500}
   .scope.shared{color:var(--hot);border:1px solid var(--hot-d);background:rgba(255,156,58,.08)}
@@ -344,6 +346,7 @@
       <div class="tabs" id="projTabs"></div>
       <button class="addtab" id="addProj">+ Project</button>
       <div class="wstools">
+        <span id="autoSaveInd">● saved</span>
         <button class="tbtn" id="saveJson" title="Download all projects as a file">↓ Save .json</button>
         <button class="tbtn" id="loadJson" title="Load a saved projects file">↑ Load .json</button>
         <input type="file" id="jsonFile" accept=".json" hidden>
@@ -1957,11 +1960,27 @@ const DEFAULTS = clone(S);   // literal defaults captured before any project mut
 function activeProject(){ return DB.projects.find(p=>p.id===DB.ap); }
 function activeScenario(){ const p=activeProject(); return p? p.scenarios.find(s=>s.id===DB.as):null; }
 
+/* ---- auto-save to localStorage ---- */
+const LS_KEY='hpsizer_db';
+let _asTimer=null;
+function scheduleSave(){
+  clearTimeout(_asTimer);
+  _asTimer=setTimeout(()=>{
+    try{
+      const data={v:1,units:S.units,ap:DB.ap,as:DB.as,projects:DB.projects};
+      localStorage.setItem(LS_KEY,JSON.stringify(data));
+      const ind=document.getElementById('autoSaveInd');
+      if(ind){ind.classList.add('show');clearTimeout(ind._t);ind._t=setTimeout(()=>ind.classList.remove('show'),1500);}
+    }catch(_){}
+  },800);
+}
+
 function persist(){
   readRawFields();
   const p=activeProject(); if(!p) return;
   BASE_KEYS.forEach(k=> p.base[k]=clone(S[k]));
   const sc=activeScenario(); if(sc){ SCEN_KEYS.forEach(k=> sc[k]=clone(S[k])); }
+  scheduleSave();
 }
 function loadActive(){
   const p=activeProject(), sc=activeScenario(); if(!p||!sc) return;
@@ -2074,7 +2093,7 @@ function renameTab(span,kind,id){
   const commit=()=>{ const v=inp.value.trim()||cur;
     if(kind==='p'){ const p=DB.projects.find(x=>x.id===id); if(p)p.name=v; }
     else { const p=activeProject(); const s=p&&p.scenarios.find(x=>x.id===id); if(s)s.name=v; }
-    renderTabs();
+    renderTabs(); scheduleSave();
   };
   inp.addEventListener('blur',commit);
   inp.addEventListener('keydown',ev=>{ if(ev.key==='Enter') inp.blur(); else if(ev.key==='Escape'){ inp.value=cur; inp.blur(); } });
@@ -2286,12 +2305,29 @@ document.getElementById('scenTabs').addEventListener('click',e=>{
 });
 document.getElementById('scenTabs').addEventListener('dblclick',e=>{ const n=e.target.closest('.nm[data-sid]'); if(n) renameTab(n,'s',n.dataset.sid); });
 
-/* ---- bootstrap: one project, one scenario from defaults ---- */
+/* ---- bootstrap: restore from localStorage, or start fresh ---- */
 (function bootstrap(){
-  const base={}; BASE_KEYS.forEach(k=>base[k]=clone(DEFAULTS[k]));
-  const sc=newScenObj('Scenario 1');
-  const p={id:uid(),name:'Project 1',base,scenarios:[sc]};
-  DB.projects.push(p); DB.ap=p.id; DB.as=sc.id;
+  let restored=false;
+  try{
+    const raw=localStorage.getItem(LS_KEY);
+    if(raw){
+      const data=JSON.parse(raw);
+      if(data.projects&&data.projects.length){
+        DB.projects=data.projects;
+        DB.ap=(data.ap&&DB.projects.find(p=>p.id===data.ap))?data.ap:DB.projects[0].id;
+        const ap=activeProject();
+        DB.as=(data.as&&ap.scenarios.find(s=>s.id===data.as))?data.as:ap.scenarios[0].id;
+        if(data.units){S.units=data.units;document.querySelectorAll('#usw button').forEach(b=>b.classList.toggle('on',b.dataset.u===S.units));}
+        restored=true;
+      }
+    }
+  }catch(_){}
+  if(!restored){
+    const base={}; BASE_KEYS.forEach(k=>base[k]=clone(DEFAULTS[k]));
+    const sc=newScenObj('Scenario 1');
+    const p={id:uid(),name:'Project 1',base,scenarios:[sc]};
+    DB.projects.push(p); DB.ap=p.id; DB.as=sc.id;
+  }
   syncLabels();
   loadActive();
   renderTabs();
