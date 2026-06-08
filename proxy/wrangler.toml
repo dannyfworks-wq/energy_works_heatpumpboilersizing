@@ -1,0 +1,8 @@
+# Cloudflare Worker config for the Anthropic API proxy.
+# Deploy with:  wrangler deploy   (see README.md for the full steps)
+name = "hp-sizer-proxy"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+# The Anthropic key is NOT stored here — it's an encrypted secret.
+# Set it once with:  wrangler secret put ANTHROPIC_API_KEY
