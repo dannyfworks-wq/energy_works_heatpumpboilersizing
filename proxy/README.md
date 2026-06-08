@@ -29,11 +29,11 @@ between them.
    → name `ANTHROPIC_API_KEY`, value your `sk-ant-…` key → click **Encrypt** →
    **Save**.
 3. **Deployments → Retry deployment** (so it picks up the key).
-4. In `index.html`, set the line near the top of the script:
-   ```js
-   const PROXY_URL = "/api/claude";
-   ```
-   Commit & push. Cloudflare auto-redeploys. **Done — visitors need nothing.**
+
+**Done — visitors need nothing.** On a `*.pages.dev` URL the page auto-detects the
+same-origin `/api/claude` function, so there's no code to edit. (Only if you put
+it on a **custom domain** do you need to set `const PROXY_URL = "/api/claude";` in
+`index.html`.)
 
 ---
 
