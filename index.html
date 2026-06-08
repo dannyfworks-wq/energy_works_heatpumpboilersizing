@@ -1623,12 +1623,16 @@ function setVal2(id,v){ const e=document.getElementById(id); if(e) e.value=(v==n
                              which proxies the request for you)
    To enable (b) on a public host, deploy proxy/worker.js and set PROXY_URL below
    (or paste the URL into the "AI proxy URL" box under AI settings). */
-const PROXY_URL = "";   // e.g. "https://hp-sizer-proxy.yourname.workers.dev"  — see proxy/README.md
+const PROXY_URL = "";   // optional override: a Worker URL ("https://…workers.dev") or "/api/claude". Blank = auto (see getProxyUrl).
 let USER_KEY=null;
 let AI_MODEL='claude-sonnet-4-6';
 function getProxyUrl(){
   try{ const o=(localStorage.getItem('hpsizer_proxy_url')||'').trim(); if(o) return o; }catch(_){}
-  return PROXY_URL;
+  if(PROXY_URL) return PROXY_URL;
+  // On Cloudflare Pages the same-origin function (functions/api/claude.js) answers at /api/claude.
+  // Auto-enable it there so no config is needed; other hosts fall through to keyless (Claude.ai).
+  try{ if(/(^|\.)pages\.dev$/i.test(location.hostname)) return '/api/claude'; }catch(_){}
+  return '';
 }
 async function callClaude(messages){
   const ctrl=new AbortController(); const to=setTimeout(()=>ctrl.abort(),60000);
