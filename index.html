@@ -442,9 +442,9 @@
         <div class="ihd"><span class="inum">02</span>Utility bills</div>
         <div class="ibody">
           <div class="drop" id="billDrop">
-            <input type="file" id="billFile" accept=".csv,.txt" hidden>
-            <span>⇪ Drop / choose bill CSV</span>
-            <small>date, therms, gas$, kWh, elec$</small>
+            <input type="file" id="billFile" accept=".csv,.txt" hidden multiple>
+            <span>⇪ Drop / choose bill CSV(s)</span>
+            <small>date, therms, gas$, kWh, elec$ · multiple files OK</small>
           </div>
           <div class="orline"><span>or annual totals</span></div>
           <div class="two">
@@ -466,9 +466,9 @@
         <div class="ihd"><span class="inum">03</span>Existing system trend data</div>
         <div class="ibody">
           <div class="drop" id="trendDrop">
-            <input type="file" id="trendFile" accept=".csv,.txt" hidden>
-            <span>⇪ Drop / choose BMS trend CSV</span>
-            <small>timestamp, supply °F, return °F, GPM, OAT…</small>
+            <input type="file" id="trendFile" accept=".csv,.txt" hidden multiple>
+            <span>⇪ Drop / choose BMS trend CSV(s)</span>
+            <small>timestamp, supply °F, return °F, GPM, OAT… · multiple files OK</small>
           </div>
           <div class="iout" id="trendOutMsg"></div>
           <svg class="ldc" id="ldcChart" viewBox="0 0 320 130" preserveAspectRatio="none" style="display:none"></svg>
@@ -1631,13 +1631,20 @@ function readFile(file){ return new Promise((res,rej)=>{ const r=new FileReader(
 function readDataURL(file){ return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(String(r.result).split(',')[1]); r.onerror=()=>rej(r.error); r.readAsDataURL(file); }); }
 
 /* ---- drag & drop wiring ---- */
-function setupDrop(dropId,inputId,onFile){
+function setupDrop(dropId,inputId,onFile,multi=false){
   const d=document.getElementById(dropId), inp=document.getElementById(inputId);
-  d.addEventListener('click',()=>inp.click());
-  inp.addEventListener('change',()=>{ if(inp.files[0]) onFile(inp.files[0],d); });
+  if(multi) inp.multiple=true;
+  d.addEventListener('click',()=>{ inp.value=''; inp.click(); });
+  inp.addEventListener('change',()=>{
+    const files=[...inp.files]; if(!files.length) return;
+    onFile(multi?files:files[0],d);
+  });
   ['dragenter','dragover'].forEach(ev=>d.addEventListener(ev,e=>{e.preventDefault();d.classList.add('over');}));
   ['dragleave','drop'].forEach(ev=>d.addEventListener(ev,e=>{e.preventDefault();d.classList.remove('over');}));
-  d.addEventListener('drop',e=>{ const f=e.dataTransfer.files[0]; if(f) onFile(f,d); });
+  d.addEventListener('drop',e=>{
+    const files=[...e.dataTransfer.files]; if(!files.length) return;
+    onFile(multi?files:files[0],d);
+  });
 }
 function setMsg(id,html,cls){ const e=document.getElementById(id); e.className='iout'+(cls?' '+cls:''); e.innerHTML=html; }
 function setVal2(id,v){ const e=document.getElementById(id); if(e) e.value=(v==null||!isFinite(v))?'':(+(+v).toFixed(2)); }
@@ -1802,27 +1809,34 @@ function applyBills(){
   render();
 }
 document.getElementById('billApply').addEventListener('click',applyBills);
-setupDrop('billDrop','billFile',async(file,d)=>{
+setupDrop('billDrop','billFile',async(files,d)=>{
   try{
-    const rows=parseCSV(await readFile(file)); if(rows.length<2) throw 0;
-    const H=rows[0];
-    const ci={ th:findCol(H,['therm']), ccf:findCol(H,['ccf','mcf']), g$:findCol(H,['gas cost','gas $','gas amount','gas charge','gas']),
-               kwh:findCol(H,['kwh']), e$:findCol(H,['elec cost','elec $','electric cost','electric $','elec amount','elec charge']) };
-    let th=0,g=0,kw=0,e=0;
-    for(let i=1;i<rows.length;i++){
-      const r=rows[i];
-      if(ci.th>=0 && !isNaN(num(r[ci.th]))) th+=num(r[ci.th]);
-      else if(ci.ccf>=0 && !isNaN(num(r[ci.ccf]))) th+=num(r[ci.ccf])*1.037; // CCF→therm approx
-      if(ci.g$>=0 && !isNaN(num(r[ci.g$]))) g+=num(r[ci.g$]);
-      if(ci.kwh>=0 && !isNaN(num(r[ci.kwh]))) kw+=num(r[ci.kwh]);
-      if(ci.e$>=0 && !isNaN(num(r[ci.e$]))) e+=num(r[ci.e$]);
+    let th=0,g=0,kw=0,e=0,totalRows=0,parsed=0;
+    for(const file of files){
+      let rows; try{ rows=parseCSV(await readFile(file)); }catch(_){ continue; }
+      if(rows.length<2) continue;
+      parsed++;
+      const H=rows[0];
+      const ci={ th:findCol(H,['therm']), ccf:findCol(H,['ccf','mcf']), g$:findCol(H,['gas cost','gas $','gas amount','gas charge','gas']),
+                 kwh:findCol(H,['kwh']), e$:findCol(H,['elec cost','elec $','electric cost','electric $','elec amount','elec charge']) };
+      for(let i=1;i<rows.length;i++){
+        const r=rows[i];
+        if(ci.th>=0 && !isNaN(num(r[ci.th]))) th+=num(r[ci.th]);
+        else if(ci.ccf>=0 && !isNaN(num(r[ci.ccf]))) th+=num(r[ci.ccf])*1.037;
+        if(ci.g$>=0 && !isNaN(num(r[ci.g$]))) g+=num(r[ci.g$]);
+        if(ci.kwh>=0 && !isNaN(num(r[ci.kwh]))) kw+=num(r[ci.kwh]);
+        if(ci.e$>=0 && !isNaN(num(r[ci.e$]))) e+=num(r[ci.e$]);
+        totalRows++;
+      }
     }
+    if(parsed===0) throw 0;
     if(th) setVal2('billTherms',th); if(g) setVal2('billGas',g);
     if(kw) setVal2('billKwh',kw); if(e) setVal2('billElec',e);
-    d.classList.add('loaded'); d.querySelector('span').textContent='✓ '+file.name+' ('+(rows.length-1)+' rows)';
-    setMsg('billOutMsg',`Summed ${rows.length-1} rows. Review totals and hit Analyze & apply.`,'ok');
-  }catch(err){ setMsg('billOutMsg','Could not parse that CSV — expected headers like date, therms, gas$, kWh, elec$.','bad'); }
-});
+    const label=files.length===1?files[0].name:files.length+' files';
+    d.classList.add('loaded'); d.querySelector('span').textContent='✓ '+label+' ('+totalRows+' rows)';
+    setMsg('billOutMsg',`Summed ${totalRows} rows${files.length>1?' across '+files.length+' files':''}. Review totals and hit Analyze & apply.`,'ok');
+  }catch(err){ setMsg('billOutMsg','Could not parse — expected headers like date, therms, gas$, kWh, elec$.','bad'); }
+},true);
 
 /* =========== 03 · trend data =========== */
 function analyzeTrend(rows){
@@ -1880,18 +1894,27 @@ function renderLDC(tr){
   g+=`<text x="${(x0+x1)/2}" y="${H-4}" fill="#5e6e7d" font-size="8" text-anchor="middle">% of logged time load exceeded · MBH</text>`;
   svg.innerHTML=g; svg.style.display='block';
 }
-setupDrop('trendDrop','trendFile',async(file,d)=>{
+setupDrop('trendDrop','trendFile',async(files,d)=>{
   try{
-    const rows=parseCSV(await readFile(file));
-    const tr=analyzeTrend(rows);
+    // Merge all files: header from the first, data rows from all
+    let merged=null, totalRows=0;
+    for(const file of files){
+      let rows; try{ rows=parseCSV(await readFile(file)); }catch(_){ continue; }
+      if(rows.length<2) continue;
+      if(merged===null){ merged=rows; totalRows=rows.length-1; }
+      else { merged=merged.concat(rows.slice(1)); totalRows+=rows.length-1; }
+    }
+    if(!merged||merged.length<3){ setMsg('trendOutMsg','Not enough rows to analyze.','bad'); return; }
+    const tr=analyzeTrend(merged);
     if(!tr){ setMsg('trendOutMsg','Not enough rows to analyze.','bad'); return; }
     if(tr.error){ setMsg('trendOutMsg',tr.error,'warn'); document.getElementById('ldcChart').style.display='none'; document.getElementById('trendApply').style.display='none'; return; }
     S.trend=tr;
-    d.classList.add('loaded'); d.querySelector('span').textContent='✓ '+file.name;
+    const label=files.length===1?files[0].name:files.length+' files ('+totalRows+' rows total)';
+    d.classList.add('loaded'); d.querySelector('span').textContent='✓ '+label;
     showTrend(tr);
     persist();
   }catch(err){ setMsg('trendOutMsg','Could not parse that CSV.','bad'); }
-});
+},true);
 document.getElementById('trendApply').addEventListener('click',()=>{
   const tr=S.trend; if(!tr) return;
   if(tr.peakBTU){ S.loadBTU=tr.peakBTU; setKnownLoad(); }
@@ -2181,8 +2204,8 @@ function resetIntakeFiles(){
   const pv=document.getElementById('exImgPreview'); if(pv) pv.style.display='none';
   const ce=document.getElementById('cutExtract'); if(ce) ce.style.display='none';
   setMsg('exOutMsg',''); setMsg('billOutMsg',''); setMsg('cutOutMsg','');
-  const defs={exImgDrop:'⇪ Photo of nameplate / unit', billDrop:'⇪ Drop / choose bill CSV',
-    trendDrop:'⇪ Drop / choose BMS trend CSV', cutDrop:'⇪ Drop / choose cut-sheet PDF'};
+  const defs={exImgDrop:'⇪ Photo of nameplate / unit', billDrop:'⇪ Drop / choose bill CSV(s)',
+    trendDrop:'⇪ Drop / choose BMS trend CSV(s)', cutDrop:'⇪ Drop / choose cut-sheet PDF'};
   Object.keys(defs).forEach(id=>{ const d=document.getElementById(id); if(d){ d.classList.remove('loaded'); const s=d.querySelector('span'); if(s) s.textContent=defs[id]; } });
 }
 
