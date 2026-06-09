@@ -84,6 +84,43 @@ works immediately and is held in memory only (never saved). This is per-person,
 so it's not the "visitors need nothing" answer — but it's the fastest way to
 verify the tool end-to-end.
 
+## Cloud sync across devices (save projects in the cloud)
+
+Separate from the AI: this lets your **projects & scenarios** save to the cloud so
+you can open them on your phone, another PC, or share them with a coworker by
+link. It's backed by **Cloudflare KV** (a free key-value store) and the
+same-origin function `functions/api/workspace/[id].js` — no extra server.
+
+```
+your browser  ──►  /api/workspace/<id>  ──►  Cloudflare KV (holds the JSON)
+```
+
+**One-time setup (Cloudflare dashboard, no command line):**
+1. **Workers & Pages → KV → Create a namespace.** Name it anything (e.g.
+   `HP_WORKSPACES`).
+2. Open your **Pages project → Settings → Functions → KV namespace bindings →
+   Add binding.** Set **Variable name** = `HP_KV` and pick the namespace from
+   step 1. **Save.**
+3. **Deployments → Retry deployment** (so the function picks up the binding).
+
+**How to use it (in the app):**
+* The **Cloud** row in the workspace bar → **☁ Turn on cloud sync.** Your current
+  projects upload and a **share link is copied to your clipboard**. From then on
+  this device auto-syncs every change.
+* Open that link on any other device (or send it to a coworker) → same projects,
+  kept in sync. **Anyone with the link can view and edit**, like a Google Doc
+  share link — so only share it with people you trust.
+* **Open shared…** lets you paste a link/ID to jump into someone else's workspace.
+  **Turn off** goes back to saving only on that device.
+
+Notes:
+* Until the `HP_KV` binding exists, the Cloud row shows *"not set up on the
+  server yet"* — finish the 3 steps above and Retry deployment.
+* Edits are last-write-wins (no live multi-user merge). Fine for one estimator
+  moving between devices or handing a project to a coworker; don't have two
+  people type into the same workspace at the same instant.
+* Each workspace is capped at ~1 MB (plenty for many projects).
+
 ## Cost & limits
 
 * Cloudflare free tier: 100k requests/day — far more than this tool needs.
@@ -98,3 +135,5 @@ verify the tool end-to-end.
 | "Forbidden (403) … rejected this site's origin" | Add your origin to `ALLOWED_ORIGINS` in `worker.js` (Option B) |
 | "Proxy / API server error (5xx) … ANTHROPIC_API_KEY" | Secret/variable not set on the backend |
 | "Anthropic rejected the key (401)" | The key value is invalid or revoked |
+| Cloud row: "not set up on the server yet" | Add the `HP_KV` binding (see Cloud sync setup) and Retry deployment |
+| Cloud row stuck on "Offline" | No network, or the function didn't deploy — check Deployments |

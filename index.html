@@ -245,6 +245,19 @@
   .tbtn{background:var(--panel2);border:1px solid var(--line2);color:var(--dim);border-radius:8px;padding:7px 11px;cursor:pointer;
     font-family:var(--mono);font-size:11.5px;transition:.15s;white-space:nowrap}
   .tbtn:hover{border-color:var(--cold);color:var(--cold)}
+  #autoSaveInd{font-family:var(--mono);font-size:11px;color:var(--ok);opacity:0;transition:opacity .6s;white-space:nowrap;pointer-events:none;align-self:center}
+  #autoSaveInd.show{opacity:1;transition:opacity .1s}
+  .wsrow.cloud{margin-top:10px;padding-top:10px;border-top:1px solid var(--line)}
+  .wslbl.cl{color:var(--cold)}
+  .cloudchip{font-family:var(--mono);font-size:11px;padding:4px 9px;border-radius:6px;border:1px solid var(--line2);color:var(--dim2);white-space:nowrap}
+  .cloudchip.synced{color:var(--ok);border-color:rgba(95,208,138,.4);background:rgba(95,208,138,.07)}
+  .cloudchip.saving,.cloudchip.loading{color:var(--warn);border-color:rgba(255,206,77,.4);background:rgba(255,206,77,.07)}
+  .cloudchip.offline,.cloudchip.error{color:var(--bad);border-color:rgba(255,107,107,.4);background:rgba(255,107,107,.07)}
+  .cloudtools{display:flex;gap:7px;flex-wrap:wrap;margin-left:auto;align-items:center}
+  .cloudopen{display:flex;gap:6px;align-items:center}
+  .cloudopen input{background:#0b0f14;border:1px solid var(--line2);color:var(--txt);border-radius:8px;padding:7px 10px;
+    font-family:var(--mono);font-size:11.5px;width:220px;outline:none}
+  .cloudopen input:focus{border-color:var(--cold)}
 
   .scope{font-family:var(--mono);font-size:9.5px;text-transform:uppercase;letter-spacing:.8px;padding:2px 6px;border-radius:5px;font-weight:500}
   .scope.shared{color:var(--hot);border:1px solid var(--hot-d);background:rgba(255,156,58,.08)}
@@ -344,6 +357,7 @@
       <div class="tabs" id="projTabs"></div>
       <button class="addtab" id="addProj">+ Project</button>
       <div class="wstools">
+        <span id="autoSaveInd">● saved</span>
         <button class="tbtn" id="saveJson" title="Download all projects as a file">↓ Save .json</button>
         <button class="tbtn" id="loadJson" title="Load a saved projects file">↑ Load .json</button>
         <input type="file" id="jsonFile" accept=".json" hidden>
@@ -354,6 +368,20 @@
       <div class="tabs scen" id="scenTabs"></div>
       <button class="addtab c" id="addScen">+ Scenario</button>
       <button class="addtab" id="dupScen">⧉ Duplicate</button>
+    </div>
+    <div class="wsrow cloud">
+      <span class="wslbl cl">Cloud</span>
+      <span id="cloudState" class="cloudchip">Off — saved on this device only</span>
+      <div class="cloudtools">
+        <button class="tbtn" id="cloudOn" title="Sync to the cloud so you can open this on any device or share it">☁ Turn on cloud sync</button>
+        <button class="tbtn" id="cloudShare" title="Copy a link that opens this workspace on any device" style="display:none">⧉ Copy share link</button>
+        <button class="tbtn" id="cloudOpenBtn" title="Open a workspace someone shared with you">Open shared…</button>
+        <button class="tbtn" id="cloudOff" title="Stop syncing; keep working on this device only" style="display:none">Turn off</button>
+        <span class="cloudopen" id="cloudOpenRow" style="display:none">
+          <input type="text" id="cloudOpenInput" placeholder="Paste a share link or ID" autocomplete="off" spellcheck="false">
+          <button class="tbtn" id="cloudOpenGo">Open</button>
+        </span>
+      </div>
     </div>
   </div>
 
@@ -1957,11 +1985,137 @@ const DEFAULTS = clone(S);   // literal defaults captured before any project mut
 function activeProject(){ return DB.projects.find(p=>p.id===DB.ap); }
 function activeScenario(){ const p=activeProject(); return p? p.scenarios.find(s=>s.id===DB.as):null; }
 
+/* ====== SAVING:  local cache (always) + cloud sync (when connected) ====== */
+const LS_KEY='hpsizer_db';        // local cache of the active workspace
+const WS_KEY='hpsizer_ws_id';     // connected cloud workspace id (absent = local only)
+let CLOUD_ID=null;                 // current cloud workspace id, or null = local only
+let _asTimer=null,_cloudTimer=null;
+
+function snapshot(){ return {v:1,units:S.units,ap:DB.ap,as:DB.as,projects:DB.projects}; }
+
+function scheduleSave(){
+  // 1) local cache — fast, on every change (works offline / when cloud is off)
+  clearTimeout(_asTimer);
+  _asTimer=setTimeout(()=>{
+    try{ localStorage.setItem(LS_KEY,JSON.stringify(snapshot())); if(!CLOUD_ID) flashSaved('● saved'); }catch(_){}
+  },800);
+  // 2) cloud — debounced longer to stay light on writes
+  if(CLOUD_ID){
+    setCloud('saving');
+    clearTimeout(_cloudTimer);
+    _cloudTimer=setTimeout(cloudPush,2500);
+  }
+}
+function flashSaved(txt){
+  const ind=document.getElementById('autoSaveInd'); if(!ind) return;
+  ind.textContent=txt; ind.classList.add('show');
+  clearTimeout(ind._t); ind._t=setTimeout(()=>ind.classList.remove('show'),1500);
+}
+
+/* ---- cloud sync (Cloudflare KV via /api/workspace/:id) ---- */
+function genId(){
+  try{ return crypto.randomUUID().replace(/-/g,''); }catch(_){}
+  let s='',a='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  for(let i=0;i<24;i++) s+=a[Math.floor(Math.random()*a.length)];
+  return s;
+}
+function parseWsId(str){
+  str=(str||'').trim(); if(!str) return '';
+  const m=str.match(/[?&]w=([A-Za-z0-9_-]{8,64})/); if(m) return m[1];
+  return /^[A-Za-z0-9_-]{8,64}$/.test(str)? str : '';
+}
+function shareLink(){ return location.origin+location.pathname+'?w='+CLOUD_ID; }
+function copyToClip(text,msg){ navigator.clipboard.writeText(text).then(()=>toast(msg)).catch(()=>toast(text)); }
+
+function setCloud(state,msg){
+  const chip=document.getElementById('cloudState'); if(!chip) return;
+  chip.className='cloudchip '+(state==='off'?'':state);
+  const labels={off:'Off — saved on this device only',synced:'Synced ✓ — open anywhere via your link',
+    saving:'Saving to cloud…',loading:'Loading from cloud…',
+    offline:'Offline — saved locally, will retry',error:msg||'Cloud error'};
+  chip.textContent=labels[state]||state;
+  const on=!!CLOUD_ID;
+  const set=(id,show)=>{ const el=document.getElementById(id); if(el) el.style.display=show?'':'none'; };
+  set('cloudOn',!on); set('cloudShare',on); set('cloudOff',on);
+}
+
+async function cloudFetch(method,id,body){
+  const ctrl=new AbortController(); const to=setTimeout(()=>ctrl.abort(),15000);
+  try{
+    const r=await fetch('/api/workspace/'+id,{method,headers:{'Content-Type':'application/json'},
+      body:body?JSON.stringify(body):undefined,signal:ctrl.signal});
+    clearTimeout(to); return r;
+  }catch(e){ clearTimeout(to); throw e; }
+}
+async function cloudPush(){
+  if(!CLOUD_ID) return;
+  try{
+    const r=await cloudFetch('PUT',CLOUD_ID,snapshot());
+    if(r.ok){ setCloud('synced'); flashSaved('☁ synced'); }
+    else if(r.status===501){ setCloud('error','Cloud not set up on the server yet — see setup steps'); }
+    else { setCloud('error','Save failed ('+r.status+')'); }
+  }catch(_){ setCloud('offline'); }
+}
+function assignDB(data){
+  DB.projects=data.projects;
+  DB.ap=(data.ap&&DB.projects.find(p=>p.id===data.ap))?data.ap:DB.projects[0].id;
+  const ap=activeProject();
+  DB.as=(data.as&&ap&&ap.scenarios.find(s=>s.id===data.as))?data.as:(ap?ap.scenarios[0].id:null);
+  if(data.units){ S.units=data.units; document.querySelectorAll('#usw button').forEach(b=>b.classList.toggle('on',b.dataset.u===S.units)); }
+}
+function applyDB(data){ assignDB(data); loadActive(); renderTabs(); }
+
+async function cloudConnect(id){
+  CLOUD_ID=id; try{ localStorage.setItem(WS_KEY,id); }catch(_){}
+  setCloud('loading');
+  try{
+    const r=await cloudFetch('GET',id);
+    if(r.status===501){ setCloud('error','Cloud not set up on the server yet — see setup steps'); return false; }
+    if(r.status===200){
+      let data=null; try{ data=await r.json(); }catch(_){}
+      if(data&&data.projects&&data.projects.length){ applyDB(data); setCloud('synced'); return true; }
+      await cloudPush(); return true;            // exists but empty -> seed it
+    }
+    if(r.status===404){ await cloudPush(); return true; }   // brand-new -> seed it
+    setCloud('error','Could not open workspace ('+r.status+')'); return false;
+  }catch(_){ setCloud('offline'); return false; }
+}
+function cloudDisconnect(){
+  CLOUD_ID=null; try{ localStorage.removeItem(WS_KEY); }catch(_){}
+  try{ history.replaceState(null,'',location.pathname); }catch(_){}
+  setCloud('off');
+}
+
+function initCloudUI(){
+  const row=document.getElementById('cloudOpenRow');
+  const input=document.getElementById('cloudOpenInput');
+  document.getElementById('cloudOn').addEventListener('click',async()=>{
+    persist();
+    const ok=await cloudConnect(genId());
+    if(ok) copyToClip(shareLink(),'Cloud on — share link copied to clipboard');
+  });
+  document.getElementById('cloudShare').addEventListener('click',()=>copyToClip(shareLink(),'Share link copied'));
+  document.getElementById('cloudOff').addEventListener('click',()=>{ cloudDisconnect(); toast('Cloud sync turned off'); });
+  document.getElementById('cloudOpenBtn').addEventListener('click',()=>{
+    row.style.display = row.style.display==='none'?'':'none';
+    if(row.style.display!=='none') input.focus();
+  });
+  const openShared=async()=>{
+    const id=parseWsId(input.value);
+    if(!id){ toast('Paste a valid share link or ID'); return; }
+    const ok=await cloudConnect(id);
+    if(ok){ row.style.display='none'; input.value=''; toast('Opened shared workspace'); }
+  };
+  document.getElementById('cloudOpenGo').addEventListener('click',openShared);
+  input.addEventListener('keydown',e=>{ if(e.key==='Enter') openShared(); });
+}
+
 function persist(){
   readRawFields();
   const p=activeProject(); if(!p) return;
   BASE_KEYS.forEach(k=> p.base[k]=clone(S[k]));
   const sc=activeScenario(); if(sc){ SCEN_KEYS.forEach(k=> sc[k]=clone(S[k])); }
+  scheduleSave();
 }
 function loadActive(){
   const p=activeProject(), sc=activeScenario(); if(!p||!sc) return;
@@ -2074,7 +2228,7 @@ function renameTab(span,kind,id){
   const commit=()=>{ const v=inp.value.trim()||cur;
     if(kind==='p'){ const p=DB.projects.find(x=>x.id===id); if(p)p.name=v; }
     else { const p=activeProject(); const s=p&&p.scenarios.find(x=>x.id===id); if(s)s.name=v; }
-    renderTabs();
+    renderTabs(); scheduleSave();
   };
   inp.addEventListener('blur',commit);
   inp.addEventListener('keydown',ev=>{ if(ev.key==='Enter') inp.blur(); else if(ev.key==='Escape'){ inp.value=cur; inp.blur(); } });
@@ -2286,15 +2440,38 @@ document.getElementById('scenTabs').addEventListener('click',e=>{
 });
 document.getElementById('scenTabs').addEventListener('dblclick',e=>{ const n=e.target.closest('.nm[data-sid]'); if(n) renameTab(n,'s',n.dataset.sid); });
 
-/* ---- bootstrap: one project, one scenario from defaults ---- */
+/* ---- bootstrap: instant local restore, then sync from the cloud ---- */
 (function bootstrap(){
-  const base={}; BASE_KEYS.forEach(k=>base[k]=clone(DEFAULTS[k]));
-  const sc=newScenObj('Scenario 1');
-  const p={id:uid(),name:'Project 1',base,scenarios:[sc]};
-  DB.projects.push(p); DB.ap=p.id; DB.as=sc.id;
+  // 1) show something immediately: last local cache, or fresh defaults
+  let restored=false;
+  try{
+    const raw=localStorage.getItem(LS_KEY);
+    if(raw){ const data=JSON.parse(raw); if(data&&data.projects&&data.projects.length){ assignDB(data); restored=true; } }
+  }catch(_){}
+  if(!restored){
+    const base={}; BASE_KEYS.forEach(k=>base[k]=clone(DEFAULTS[k]));
+    const sc=newScenObj('Scenario 1');
+    const p={id:uid(),name:'Project 1',base,scenarios:[sc]};
+    DB.projects.push(p); DB.ap=p.id; DB.as=sc.id;
+  }
   syncLabels();
   loadActive();
   renderTabs();
+
+  // 2) cloud: a ?w= link wins, else the workspace this device last used
+  initCloudUI();
+  let wsId='';
+  try{ wsId=parseWsId(location.search) || (localStorage.getItem(WS_KEY)||''); }catch(_){}
+  if(wsId){ cloudConnect(wsId); } else { setCloud('off'); }
+
+  // 3) best-effort save when the tab is closing
+  window.addEventListener('pagehide',()=>{
+    try{
+      const blob=JSON.stringify(snapshot());
+      localStorage.setItem(LS_KEY,blob);
+      if(CLOUD_ID&&navigator.sendBeacon) navigator.sendBeacon('/api/workspace/'+CLOUD_ID,new Blob([blob],{type:'application/json'}));
+    }catch(_){}
+  });
 })();
 </script>
 </body>
