@@ -146,6 +146,30 @@
   .savebar .lab{font-size:12px;color:var(--dim);letter-spacing:.3px}
   .savebar .num{font-family:var(--mono);font-size:21px;color:var(--ok)}
   .savebar.neg .num{color:var(--bad)}
+  .costcard .pump{font-size:11px;color:var(--dim2);margin-top:3px;font-family:var(--mono)}
+  /* expandable calc logic */
+  .calclogic{margin-top:10px;border-radius:9px;border:1px solid var(--line);overflow:hidden}
+  .calclogic>summary{padding:8px 12px;cursor:pointer;list-style:none;font-size:11.5px;color:var(--dim);
+    letter-spacing:.3px;display:flex;align-items:center;gap:7px;background:#0b0f14;user-select:none}
+  .calclogic>summary::-webkit-details-marker{display:none}
+  .calclogic>summary::before{content:"▶";font-size:8px;color:var(--hot);transition:.15s}
+  .calclogic[open]>summary::before{content:"▼"}
+  .calclogic-body{padding:12px 14px;font-family:var(--mono);font-size:11px;line-height:1.7}
+  .calcsec{color:var(--hot);font-size:10px;letter-spacing:.8px;text-transform:uppercase;margin:8px 0 2px}
+  .calcsec:first-child{margin-top:0}
+  .calcsec.c{color:var(--cold)}
+  .calcrow{display:flex;justify-content:space-between;gap:8px;color:var(--dim2)}
+  .calcrow .cv{color:var(--txt);text-align:right;white-space:nowrap}
+  .calcrow.tot{color:var(--txt);font-weight:600;border-top:1px solid var(--line);margin-top:4px;padding-top:4px}
+  .calcsep{border-top:1px solid var(--line);margin:6px 0}
+  /* pump inputs */
+  .pumpsec{margin-top:12px;border-top:1px solid var(--line);padding-top:12px}
+  .pumpsec .pumprow{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+  .pumpsec .pumprow label{font-size:11.5px;color:var(--dim);letter-spacing:.3px}
+  .vsp-toggle{display:flex;border:1px solid var(--line2);border-radius:7px;overflow:hidden;font-family:var(--mono)}
+  .vsp-toggle button{background:#0b0f14;color:var(--dim);border:0;padding:6px 11px;cursor:pointer;font-size:11px;transition:.15s}
+  .vsp-toggle button.on{background:var(--cold);color:#001a1b}
+  .vsp-toggle button:not(.on):hover{color:var(--txt)}
 
   .actions{display:flex;gap:10px;margin-top:18px;flex-wrap:wrap}
   .btn{background:var(--panel2);border:1px solid var(--line2);color:var(--txt);padding:10px 16px;border-radius:9px;
@@ -724,11 +748,11 @@
 
         <div class="two">
           <div class="field">
-            <label>Seasonal COP <span class="u">blank = auto</span></label>
+            <label>Heat pump seasonal COP <span class="u">blank = auto (design × 1.15)</span></label>
             <input type="number" id="scop" step="0.1" placeholder="auto">
           </div>
           <div class="field">
-            <label>Boiler efficiency <span class="u">η</span></label>
+            <label>Existing boiler efficiency <span class="u">η — existing equipment</span></label>
             <input type="number" id="beff" step="0.01" value="0.82">
           </div>
         </div>
@@ -740,6 +764,19 @@
           <div class="field">
             <label>Gas <span class="u">$/therm</span></label>
             <input type="number" id="grate" step="0.05" value="1.50">
+          </div>
+        </div>
+        <div class="pumpsec">
+          <div class="pumprow">
+            <label>Pump energy <span class="u" style="color:var(--dim2)">optional — adds to HP operating cost</span></label>
+            <div class="vsp-toggle" id="vspSeg">
+              <button data-vsp="0">Fixed speed</button>
+              <button data-vsp="1" class="on">VSP</button>
+            </div>
+          </div>
+          <div class="field">
+            <label>Pump design power <span class="u">kW at full flow — leave blank to omit</span></label>
+            <input type="number" id="pumpKW" step="0.5" placeholder="e.g. 7.5 kW">
           </div>
         </div>
       </div>
@@ -811,6 +848,7 @@
         <div class="ptitle">Annual Operating Cost <span class="u" style="margin-left:auto;color:var(--dim2)">all-electric vs boiler</span></div>
         <div class="cost" id="costGrid"></div>
         <div class="note" id="costNote"></div>
+        <div id="calcLogic"></div>
       </div>
 
       <div class="panel" id="comparePanel">
@@ -847,7 +885,7 @@ const S = {
   strat:'full', bivPct:70, oversize:1.15, eachBTU:null,
   volt:480, phase:3, pf:0.88,
   runMode:'eflh', hrsDay:12, daysWk:7, weeksYr:30, loadFac:50,
-  eflh:1336, scop:null, beff:0.82, erate:0.17, grate:1.50,
+  eflh:1336, scop:null, beff:0.82, erate:0.17, grate:1.50, vsp:true, pumpKW:null,
   // ---- intake ----
   billActive:false, billTherms:null, billGas:null, billKwh:null, billElec:null, heatShare:90,
   ratedCap:null, ratedCOP:null, maxLWT:null, minSrc:null, refrig:'',
@@ -1065,9 +1103,26 @@ function costOf(r, st){
   }
   const hpKWh = (annualBTU/3412.142)/scop;
   const hpCost = hpKWh*st.erate;
-  const save = boilerCost - hpCost;
+
+  // pump energy: design kW × run-hours, VSP scales power as flow² (affinity law approx)
+  const pumpKW = (st.pumpKW && st.pumpKW>0) ? st.pumpKW : 0;
+  let pumpKWh=0, pumpNote='';
+  if(pumpKW>0){
+    const runHrs = b.runHrs;
+    if(st.vsp){
+      const lf = Math.min(1, Math.max(0.05, b.lf));
+      pumpKWh = pumpKW * runHrs * Math.pow(lf, 2.0);
+      pumpNote = `VSP — power ∝ flow² (affinity law), avg ${Math.round(lf*100)}% load`;
+    } else {
+      pumpKWh = pumpKW * runHrs;
+      pumpNote = `Fixed speed — full power all run-hours`;
+    }
+  }
+  const pumpCost = pumpKWh * st.erate;
+  const totalHpCost = hpCost + pumpCost;
+  const save = boilerCost - totalHpCost;
   const pct = boilerCost>0 ? save/boilerCost*100 : 0;
-  return {scop,annualBTU,therms,boilerCost,hpKWh,hpCost,save,pct,basisLabel,billed};
+  return {scop,annualBTU,therms,boilerCost,hpKWh,hpCost,pumpKWh,pumpCost,pumpNote,totalHpCost,save,pct,basisLabel,billed};
 }
 
 /* ---------- render ---------- */
@@ -1398,25 +1453,65 @@ function renderChart(r){
 /* ---------- operating cost ---------- */
 function renderCost(r){
   const c = costOf(r, S);
+  const si = S.units==='si';
+  const b = energyBasis(S);
+  // format large BTU values
+  const fBTU = v => v>=1e9 ? f1(v/1e9)+' billion BTU' : f0(v/1e6)+' MBH·hr';
+
   document.getElementById('costGrid').innerHTML = `
     <div class="costcard">
       <div class="h"><span class="dot" style="background:#ff9c3a"></span>Existing gas boiler${c.billed?' · billed':''}</div>
       <div class="big" style="color:#ff9c3a">${money(c.boilerCost)}<span style="font-size:12px;color:#5e6e7d">/yr</span></div>
-      <div class="ln">${f0(c.therms)} therms · η ${S.beff}</div>
+      <div class="ln">${f0(c.therms)} therms · existing efficiency η ${S.beff}</div>
     </div>
     <div class="costcard">
       <div class="h"><span class="dot" style="background:#37cfd6"></span>All-electric heat pump</div>
-      <div class="big" style="color:#37cfd6">${money(c.hpCost)}<span style="font-size:12px;color:#5e6e7d">/yr</span></div>
+      <div class="big" style="color:#37cfd6">${money(c.totalHpCost)}<span style="font-size:12px;color:#5e6e7d">/yr</span></div>
       <div class="ln">${f0(c.hpKWh)} kWh · seasonal COP ${f2(c.scop)}</div>
+      ${c.pumpKWh>0?`<div class="pump">+ ${f0(c.pumpKWh)} kWh pumping (${S.vsp?'VSP':'fixed'}) = ${money(c.pumpCost)}/yr</div>`:''}
     </div>
     <div class="savebar ${c.save<0?'neg':''}">
       <span class="lab">${c.save<0?'Annual cost increase':'Annual energy savings'} vs boiler</span>
       <span class="num">${money(Math.abs(c.save))} <span style="font-size:13px;color:#5e6e7d">(${f0(Math.abs(c.pct))}%)</span></span>
     </div>`;
+
   document.getElementById('costNote').innerHTML =
     `Basis: <b style="color:#e8eef4">${c.basisLabel}</b>${c.billed?' — boiler cost is your real billed gas, scaled to heating share':' — not continuous operation (24/7/365 = 8,760 h)'}. `
-    + 'Seasonal COP defaults to design COP × 1.15; override for your climate. '
+    + (S.scop?'SCOP is your manual override.':'Heat pump seasonal COP = design COP × 1.15 (seasonal factor); override above for your climate. ')
     + 'All-electric comparison shown — a bivalent design lands between these two. Excludes demand charges, maintenance, and incentives.';
+
+  // expandable calc logic
+  const scopNote = S.scop ? `${f2(c.scop)} (manual override)` : `${f2(c.scop)} = design COP ${f2(r.cop)} × 1.15 seasonal factor`;
+  const loadDisp = si ? f1(BTU2KW(r.loadBTU))+' kW' : f1(BTU2MBH(r.loadBTU))+' MBH';
+  document.getElementById('calcLogic').innerHTML = `
+<details class="calclogic">
+  <summary>Show calculation logic &amp; assumptions</summary>
+  <div class="calclogic-body">
+    <div class="calcsec">Existing boiler baseline</div>
+    <div class="calcrow"><span>Design heating load</span><span class="cv">${loadDisp}</span></div>
+    <div class="calcrow"><span>Run basis</span><span class="cv">${f0(b.eflh)} equiv. full-load hrs/yr</span></div>
+    <div class="calcrow"><span>Annual heat delivered</span><span class="cv">${fBTU(c.annualBTU)}/yr</span></div>
+    <div class="calcrow"><span>Existing boiler efficiency η</span><span class="cv">${S.beff} — input above</span></div>
+    <div class="calcrow"><span>Gas consumption</span><span class="cv">${fBTU(c.annualBTU)} ÷ 100,000 ÷ ${S.beff} = ${f0(c.therms)} therms/yr</span></div>
+    <div class="calcrow tot"><span>Boiler cost</span><span class="cv">${f0(c.therms)} therms × $${S.grate}/therm = ${money(c.boilerCost)}/yr</span></div>
+    <div class="calcsep"></div>
+    <div class="calcsec c">Heat pump (proposed — all-electric)</div>
+    <div class="calcrow"><span>Same heat delivered</span><span class="cv">${fBTU(c.annualBTU)}/yr</span></div>
+    <div class="calcrow"><span>Seasonal COP</span><span class="cv">${scopNote}</span></div>
+    <div class="calcrow"><span>Compressor electricity</span><span class="cv">${fBTU(c.annualBTU)} ÷ 3,412 ÷ ${f2(c.scop)} = ${f0(c.hpKWh)} kWh/yr</span></div>
+    <div class="calcrow"><span>Compressor cost</span><span class="cv">${f0(c.hpKWh)} kWh × $${S.erate}/kWh = ${money(c.hpCost)}/yr</span></div>
+    ${c.pumpKWh>0 ? `
+    <div class="calcsep"></div>
+    <div class="calcsec c">Pump energy</div>
+    <div class="calcrow"><span>Pump design power</span><span class="cv">${S.pumpKW} kW at full flow</span></div>
+    <div class="calcrow"><span>Run hours</span><span class="cv">${f0(b.runHrs)} hrs/yr</span></div>
+    <div class="calcrow"><span>Type</span><span class="cv">${c.pumpNote}</span></div>
+    <div class="calcrow"><span>Pump electricity</span><span class="cv">${f0(c.pumpKWh)} kWh/yr</span></div>
+    <div class="calcrow"><span>Pump cost</span><span class="cv">${f0(c.pumpKWh)} kWh × $${S.erate}/kWh = ${money(c.pumpCost)}/yr</span></div>` : ''}
+    <div class="calcsep"></div>
+    <div class="calcrow tot"><span>Total HP cost</span><span class="cv" style="color:var(--cold)">${money(c.totalHpCost)}/yr</span></div>
+  </div>
+</details>`;
 }
 
 /* =================== UI wiring =================== */
@@ -1472,6 +1567,8 @@ bindNum('eta','eta'); bindDeltaTemp('condA','condA'); bindDeltaTemp('evapA','eva
 bindNum('bivPct','bivPct'); bindNum('oversize','oversize');
 bindNum('volt','volt'); bindNum('pf','pf');
 bindNum('eflh','eflh'); bindNum('beff','beff'); bindNum('erate','erate'); bindNum('grate','grate');
+document.getElementById('pumpKW').addEventListener('input',e=>{ const v=parseFloat(e.target.value); S.pumpKW=isNaN(v)?null:v; render(); });
+document.getElementById('vspSeg').addEventListener('click',e=>{ const b=e.target.closest('[data-vsp]'); if(b){ S.vsp=b.dataset.vsp==='1'; [...document.getElementById('vspSeg').children].forEach(x=>x.classList.toggle('on',x===b)); render(); } });
 bindNum('hrsDay','hrsDay'); bindNum('daysWk','daysWk'); bindNum('weeksYr','weeksYr'); bindNum('loadFac','loadFac');
 document.getElementById('phase').addEventListener('change',e=>{S.phase=+e.target.value;render();});
 document.getElementById('scop').addEventListener('input',e=>{
@@ -1981,7 +2078,7 @@ let _uid=0; const uid = () => 'id'+Date.now().toString(36)+(_uid++);
 function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
 const BASE_KEYS = ['location','known','loadBTU','gpm','runMode','hrsDay','daysWk','weeksYr','loadFac','eflh',
-  'beff','erate','grate','billActive','billTherms','billGas','billKwh','billElec','heatShare','trend',
+  'beff','erate','grate','vsp','pumpKW','billActive','billTherms','billGas','billKwh','billElec','heatShare','trend',
   'exMfg','exModel','exSerial','exOut','exEff','exYear',
   'exSupplyF','exReturnF','roomF','emitter','exQty'];
 const SCEN_KEYS = ['src','sourceF','supplyF','returnF','eta','condA','evapA','strat','bivPct','oversize','eachBTU',
@@ -1990,7 +2087,7 @@ const SCEN_KEYS = ['src','sourceF','supplyF','returnF','eta','condA','evapA','st
 // raw intake fields kept in sync DOM<->S in their native units
 const RAW=[['exMfg','t'],['exModel','t'],['exSerial','t'],['exOut','n'],['exEff','n'],['exYear','n'],['exQty','n'],
   ['billTherms','n'],['billGas','n'],['billKwh','n'],['billElec','n'],['heatShare','n'],
-  ['ratedCap','n'],['ratedCOP','n'],['maxLWT','n'],['minSrc','n'],['refrig','t']];
+  ['ratedCap','n'],['ratedCOP','n'],['maxLWT','n'],['minSrc','n'],['refrig','t'],['pumpKW','n']];
 function readRawFields(){
   RAW.forEach(([id,t])=>{ const el=document.getElementById(id); if(!el) return;
     if(t==='t'){ S[id]=el.value.trim(); }
@@ -2175,6 +2272,8 @@ function refreshAllInputs(){
   setSeg('runSeg','r',S.runMode);
   document.getElementById('eflhMode').style.display=S.runMode==='eflh'?'block':'none';
   document.getElementById('schedMode').style.display=S.runMode==='sched'?'block':'none';
+  // VSP toggle
+  const vspEl=document.getElementById('vspSeg'); if(vspEl) [...vspEl.children].forEach(b=>b.classList.toggle('on',b.dataset.vsp===(S.vsp?'1':'0')));
   const ls=document.getElementById('loc'); if(ls) ls.value=S.location;
   refreshLocHint();
   showTrend(S.trend);
