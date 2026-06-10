@@ -1970,7 +1970,7 @@ function extractTrendRecords(rows){
     if(time>=0){ const v=Date.parse(r[time]); if(!isNaN(v)) t=v; }
     records.push({t,sup:num(r[sup]),ret:num(r[ret]),flow:flow>=0?num(r[flow]):NaN});
   }
-  return {records,cols:{sup:H[sup],ret:H[ret],flow:flow>=0?H[flow]:null}};
+  return {records,cols:{sup:H[sup],ret:H[ret],flow:flow>=0?H[flow]:null},allCols:H};
 }
 function analyzeTrend(records){
   if(!records||records.length<3) return {error:'Not enough rows to analyze.'};
@@ -2042,12 +2042,12 @@ function renderLDC(tr){
 setupDrop('trendDrop','trendFile',async(files,d)=>{
   try{
     // Each file maps its own header → records, so mixed column orders merge safely
-    const all=[]; let cols=null; const errs=[];
+    const all=[]; let cols=null, allCols=null; const errs=[];
     for(const file of files){
       let rows; try{ rows=parseCSV(await readFile(file)); }catch(_){ errs.push(file.name); continue; }
       const ex=extractTrendRecords(rows);
       if(ex.err){ errs.push(file.name+' — '+ex.err); continue; }
-      all.push.apply(all,ex.records); cols=cols||ex.cols;
+      all.push.apply(all,ex.records); cols=cols||ex.cols; allCols=allCols||ex.allCols;
     }
     if(all.length<3){
       setMsg('trendOutMsg', errs.length?('Could not read: '+errs.join('; ')):'Not enough rows to analyze.','bad');
@@ -2055,7 +2055,7 @@ setupDrop('trendDrop','trendFile',async(files,d)=>{
     }
     const tr=analyzeTrend(all);
     if(tr.error){ setMsg('trendOutMsg',tr.error,'warn'); document.getElementById('ldcChart').style.display='none'; document.getElementById('trendApply').style.display='none'; return; }
-    tr.cols=cols;
+    tr.cols=cols; tr.allCols=allCols;
     S.trend=tr;
     const label=files.length===1?files[0].name:files.length+' files ('+all.length+' rows total)';
     d.classList.add('loaded'); d.querySelector('span').textContent='✓ '+label;
@@ -2367,10 +2367,12 @@ function showTrend(tr){
     ? `cols: ${esc(tr.cols.sup)} / ${esc(tr.cols.ret)}${tr.cols.flow?' / '+esc(tr.cols.flow):' · no flow col'}`
     : '';
   if(tr.tempsOk===false || !(tr.swt>=60)){
+    const allColsList = tr.allCols ? `All columns found: ${tr.allCols.map(c=>'"'+c+'"').join(', ')}` : '';
     setMsg('trendOutMsg',
       `<b>Matched columns don't look like hydronic water temps</b> (avg ${f0(tr.swt)}° — hot-water loops run 100°F+). `
-      +(colStr?colStr+'. ':'')
-      +`Check the CSV headers — name the water columns clearly (e.g. "HWS Temp" / "HWR Temp") and re-drop.`,'warn');
+      +(colStr?`Matched: ${colStr}. `:'')
+      +(allColsList?`<br><span style="color:var(--dim2);font-size:11px">${allColsList}</span><br>`:'')
+      +`Rename the hot-water supply/return columns to include "HWS"/"HWR" or "Supply"/"Return" and re-drop.`,'warn');
     if(svg) svg.style.display='none';
     if(ab) ab.style.display='none';
     return;
