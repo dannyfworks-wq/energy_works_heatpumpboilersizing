@@ -2041,6 +2041,7 @@ function renderLDC(tr){
 }
 setupDrop('trendDrop','trendFile',async(files,d)=>{
   try{
+    setMsg('trendOutMsg','Analyzing '+files.length+' file(s)…');
     // Each file maps its own header → records, so mixed column orders merge safely
     const all=[]; let cols=null, allCols=null; const errs=[];
     for(const file of files){
@@ -2255,6 +2256,20 @@ function assignDB(data){
   DB.as=(data.as&&ap&&ap.scenarios.find(s=>s.id===data.as))?data.as:(ap?ap.scenarios[0].id:null);
   if(data.units){ S.units=data.units; document.querySelectorAll('#usw button').forEach(b=>b.classList.toggle('on',b.dataset.u===S.units)); }
   _savedAt=data.savedAt||0;
+  healDB();
+}
+// Repair implausible water temps (e.g. 16/16°F written by an earlier trend-apply
+// bug). Heating loops never design below ~80°F supply — anything lower is garbage.
+function healDB(){
+  let fixed=0;
+  DB.projects.forEach(p=>{
+    if(p.base && !(p.base.exSupplyF>=80)){ p.base.exSupplyF=DEFAULTS.exSupplyF; p.base.exReturnF=DEFAULTS.exReturnF; fixed++; }
+    (p.scenarios||[]).forEach(sc=>{
+      if(!(sc.supplyF>=80)){ sc.supplyF=DEFAULTS.supplyF; sc.returnF=DEFAULTS.returnF; fixed++; }
+    });
+  });
+  if(fixed){ scheduleSave(); setTimeout(()=>toast('Repaired '+fixed+' implausible temperature value(s) from an earlier bug'),600); }
+  return fixed;
 }
 function applyDB(data){ assignDB(data); loadActive(); renderTabs(); }
 
@@ -2418,10 +2433,17 @@ function newProject(){
   try{ loadActive(); }catch(_){}
   renderTabs();
 }
+// Cut-sheet specs are equipment-specific — a new scenario means evaluating
+// different equipment, so these always start blank (Duplicate keeps them).
+const EQUIP_KEYS=['ratedCap','ratedCOP','maxLWT','minSrc','refrig','eachBTU'];
 function addScenario(){
   _dbEditCount++;
   persist(); const p=activeProject(); if(!p)return;
-  const sc=newScenObj('Scenario '+(p.scenarios.length+1));
+  // carry the current design (source, temps, strategy) but drop proposed equipment
+  const cur=activeScenario();
+  const sc=cur? clone(cur) : newScenObj('');
+  sc.id=uid(); sc.name='Scenario '+(p.scenarios.length+1);
+  EQUIP_KEYS.forEach(k=>sc[k]=clone(DEFAULTS[k]));
   p.scenarios.push(sc); DB.as=sc.id;
   try{ loadActive(); }catch(_){}
   renderTabs();
