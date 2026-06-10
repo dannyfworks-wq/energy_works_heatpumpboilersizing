@@ -2110,6 +2110,7 @@ const LS_KEY='hpsizer_db';        // local cache of the active workspace
 const WS_KEY='hpsizer_ws_id';     // connected cloud workspace id (absent = local only)
 let CLOUD_ID=null;                 // current cloud workspace id, or null = local only
 let _asTimer=null,_cloudTimer=null;
+let _dbEditCount=0;                // increments on explicit project/scenario add/delete
 
 function snapshot(){ return {v:1,units:S.units,ap:DB.ap,as:DB.as,projects:DB.projects}; }
 
@@ -2185,15 +2186,19 @@ function assignDB(data){
 }
 function applyDB(data){ assignDB(data); loadActive(); renderTabs(); }
 
-async function cloudConnect(id){
+async function cloudConnect(id, forceApply=false){
   CLOUD_ID=id; try{ localStorage.setItem(WS_KEY,id); }catch(_){}
   setCloud('loading');
+  const editSnap=_dbEditCount; // snapshot before async — if user adds/deletes projects while we fetch, we won't clobber them
   try{
     const r=await cloudFetch('GET',id);
     if(r.status===501){ setCloud('error','Cloud not set up on the server yet — see setup steps'); return false; }
     if(r.status===200){
       let data=null; try{ data=await r.json(); }catch(_){}
-      if(data&&data.projects&&data.projects.length){ applyDB(data); setCloud('synced'); return true; }
+      if(data&&data.projects&&data.projects.length){
+        if(forceApply||_dbEditCount===editSnap){ applyDB(data); }
+        setCloud('synced'); return true;
+      }
       await cloudPush(); return true;            // exists but empty -> seed it
     }
     if(r.status===404){ await cloudPush(); return true; }   // brand-new -> seed it
@@ -2223,7 +2228,7 @@ function initCloudUI(){
   const openShared=async()=>{
     const id=parseWsId(input.value);
     if(!id){ toast('Paste a valid share link or ID'); return; }
-    const ok=await cloudConnect(id);
+    const ok=await cloudConnect(id, true); // forceApply — user explicitly chose to load this workspace
     if(ok){ row.style.display='none'; input.value=''; toast('Opened shared workspace'); }
   };
   document.getElementById('cloudOpenGo').addEventListener('click',openShared);
@@ -2310,35 +2315,46 @@ function resetIntakeFiles(){
 
 function newScenObj(name){ const o={id:uid(),name}; SCEN_KEYS.forEach(k=>o[k]=clone(DEFAULTS[k])); return o; }
 function newProject(){
+  _dbEditCount++;
   persist();
   const base={}; BASE_KEYS.forEach(k=>base[k]=clone(DEFAULTS[k]));
   const sc=newScenObj('Scenario 1');
   const p={id:uid(),name:'Project '+(DB.projects.length+1),base,scenarios:[sc]};
-  DB.projects.push(p); DB.ap=p.id; DB.as=sc.id; loadActive(); renderTabs();
+  DB.projects.push(p); DB.ap=p.id; DB.as=sc.id;
+  try{ loadActive(); }catch(_){}
+  renderTabs();
 }
 function addScenario(){
+  _dbEditCount++;
   persist(); const p=activeProject(); if(!p)return;
   const sc=newScenObj('Scenario '+(p.scenarios.length+1));
-  p.scenarios.push(sc); DB.as=sc.id; loadActive(); renderTabs();
+  p.scenarios.push(sc); DB.as=sc.id;
+  try{ loadActive(); }catch(_){}
+  renderTabs();
 }
 function duplicateScenario(){
+  _dbEditCount++;
   persist(); const p=activeProject(); const cur=activeScenario(); if(!cur)return;
   const cp=clone(cur); cp.id=uid(); cp.name=cur.name+' (copy)';
-  p.scenarios.push(cp); DB.as=cp.id; loadActive(); renderTabs();
+  p.scenarios.push(cp); DB.as=cp.id;
+  try{ loadActive(); }catch(_){}
+  renderTabs();
 }
 function deleteProject(id){
   if(DB.projects.length<=1){ toast('Keep at least one project'); return; }
   const i=DB.projects.findIndex(p=>p.id===id); if(i<0)return;
+  _dbEditCount++;
   DB.projects.splice(i,1);
-  if(DB.ap===id){ const np=DB.projects[Math.max(0,i-1)]; DB.ap=np.id; DB.as=np.scenarios[0].id; loadActive(); }
+  if(DB.ap===id){ const np=DB.projects[Math.max(0,i-1)]; DB.ap=np.id; DB.as=np.scenarios[0].id; try{ loadActive(); }catch(_){} }
   renderTabs();
 }
 function deleteScenario(id){
   const p=activeProject(); if(!p)return;
   if(p.scenarios.length<=1){ toast('A project needs at least one scenario'); return; }
   const i=p.scenarios.findIndex(s=>s.id===id); if(i<0)return;
+  _dbEditCount++;
   p.scenarios.splice(i,1);
-  if(DB.as===id){ DB.as=p.scenarios[Math.max(0,i-1)].id; loadActive(); }
+  if(DB.as===id){ DB.as=p.scenarios[Math.max(0,i-1)].id; try{ loadActive(); }catch(_){} }
   renderTabs();
 }
 function switchProject(id){ if(id===DB.ap)return; persist(); DB.ap=id; const p=activeProject(); DB.as=p.scenarios[0].id; loadActive(); renderTabs(); }
