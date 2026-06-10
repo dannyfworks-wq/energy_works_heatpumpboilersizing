@@ -1936,9 +1936,9 @@ setupDrop('billDrop','billFile',async(files,d)=>{
 },true);
 
 /* =========== 03 · trend data =========== */
-/* Trend columns: score headers rather than first-substring-match, so
-   "OAT Temperature" can't be mistaken for a return-water column ('rat'),
-   and short codes (SWT/RWT/SAT/RAT) only match as whole words. */
+/* Scoring-based column matcher. Also handles BMS single-sensor exports (one value column
+   per file, with preamble rows) — sensor path in row 0 identifies supply/return/cmd,
+   files are merged by timestamp. */
 function pickCol(H,inc,tok,excl,skipIdx){
   let best=-1,score=0;
   H.forEach((h0,i)=>{
@@ -1949,18 +1949,69 @@ function pickCol(H,inc,tok,excl,skipIdx){
     let s=0;
     if(inc) inc.forEach(x=>{ if(h.includes(x)) s+=2; });
     if(tok) tok.forEach(x=>{ if(toks.includes(x)) s+=3; });
-    if(s>0&&/setpoint|set point|stpt/.test(h)) s-=1;  // prefer the actual sensor over its setpoint
+    if(s>0&&/setpoint|set point|stpt/.test(h)) s-=1;
     if(s>score){ score=s; best=i; }
   });
   return best;
 }
 const TREND_EXCL=['oat','osat','outdoor','outside','ambient','room','space','zone'];
+// Detect BMS single-sensor export preamble (Automated Logic, Niagara, Metasys, etc.)
+function detectBMSPreamble(rows){
+  if(!rows||rows.length<2) return {isBMS:false};
+  const r0=String(rows[0]&&rows[0][0]||'');
+  const isBMS=/\/|^history:|^trend:|^point:/i.test(r0)||/Hw[A-Z]|Chw[A-Z]/.test(r0);
+  if(!isBMS) return {isBMS:false};
+  for(let i=1;i<Math.min(8,rows.length);i++){
+    const r=rows[i]; if(!r||!r.length) continue;
+    if(/^(timestamp|date|time)/i.test(String(r[0]||'')))
+      return {isBMS:true, hint:r0.toLowerCase(), headerRow:i};
+  }
+  return {isBMS:false};
+}
+// Classify a BMS sensor path as 'supply' | 'return' | 'cmd' | 'flow' | 'unknown'
+function classifyBMSHint(hint){
+  const h=String(hint).toLowerCase();
+  if(/supply|hwsupply|chws|swt|lwt|leaving/.test(h)) return 'supply';
+  if(/return|hwreturn|chwr|rwt|ewt|entering/.test(h)) return 'return';
+  if(/cmd|command|enable|run|status|pump|valve/.test(h)) return 'cmd';
+  if(/flow|gpm|lps/.test(h)) return 'flow';
+  return 'unknown';
+}
+// Parse BMS timestamp "17-Jul-25 9:50:02 AM PDT" → epoch ms or null
+function parseBMSTimestamp(s){
+  const cleaned=String(s).replace(/\s+[A-Z]{2,4}$/,'');
+  let t=Date.parse(cleaned);
+  if(!isNaN(t)) return t;
+  const m=cleaned.match(/(\d{1,2})-([A-Za-z]{3})-(\d{2})\s+(.*)/);
+  if(m){ const yr=+m[3]<50?2000+ +m[3]:1900+ +m[3]; t=Date.parse(m[2]+' '+m[1]+', '+yr+' '+m[4]); }
+  return isNaN(t)?null:t;
+}
 function extractTrendRecords(rows){
   if(!rows||rows.length<2) return {err:'No data rows.'};
+  // BMS single-sensor export: one value column per file, sensor identified in preamble row 0
+  const bms=detectBMSPreamble(rows);
+  if(bms.isBMS){
+    const H=rows[bms.headerRow].map(String);
+    const type=classifyBMSHint(bms.hint);
+    const timeCol=H.findIndex(h=>/^(timestamp|date|time)/i.test(h));
+    const valCol=H.findIndex((h,i)=>i!==timeCol);
+    if(valCol<0) return {err:'No value column found.',type,allCols:H};
+    const records=[];
+    for(let i=bms.headerRow+1;i<rows.length;i++){
+      const r=rows[i]; if(!r||r.length<2) continue;
+      const rawTS=timeCol>=0?String(r[timeCol]||''):'';
+      const val=num(r[valCol]);
+      if(isNaN(val)) continue;
+      records.push({t:rawTS?parseBMSTimestamp(rawTS):null, val, rawTS});
+    }
+    if(!records.length) return {err:'No valid data rows.',type,allCols:H};
+    return {records, type, cols:{val:H[valCol]}, allCols:H, isBMS:true};
+  }
+  // Standard multi-column CSV: locate supply and return columns by name scoring
   const H=rows[0].map(String);
   const sup=pickCol(H,['supply','leaving'],['swt','hws','lwt','sat'],TREND_EXCL);
   const ret=pickCol(H,['return','entering'],['rwt','hwr','ewt','rat'],TREND_EXCL,sup);
-  if(sup<0||ret<0) return {err:'Need supply and return temperature columns.'};
+  if(sup<0||ret<0) return {err:'Need supply and return temperature columns.',allCols:H};
   const flow=pickCol(H,['flow','gpm'],['gpm','lps']);
   const time=pickCol(H,['time','date','stamp'],['ts']);
   const records=[];
@@ -1970,7 +2021,29 @@ function extractTrendRecords(rows){
     if(time>=0){ const v=Date.parse(r[time]); if(!isNaN(v)) t=v; }
     records.push({t,sup:num(r[sup]),ret:num(r[ret]),flow:flow>=0?num(r[flow]):NaN});
   }
-  return {records,cols:{sup:H[sup],ret:H[ret],flow:flow>=0?H[flow]:null},allCols:H};
+  return {records,type:'multi',cols:{sup:H[sup],ret:H[ret],flow:flow>=0?H[flow]:null},allCols:H};
+}
+// Merge BMS single-value files (each with one sensor) into paired {t,sup,ret,flow} records
+function mergeBMSFiles(parsed){
+  const supFiles=parsed.filter(p=>p.type==='supply');
+  const retFiles=parsed.filter(p=>p.type==='return');
+  const flowFiles=parsed.filter(p=>p.type==='flow');
+  if(!supFiles.length&&!retFiles.length) return {err:'Supply and return temp files not identified — check sensor names contain "Supply"/"Return".'};
+  if(!supFiles.length) return {err:'Found return temp file but no supply temp file. Drop supply and return together.'};
+  if(!retFiles.length) return {err:'Found supply temp file but no return temp file. Drop supply and return together.'};
+  const retMap=new Map();
+  retFiles.forEach(f=>f.records.forEach(r=>retMap.set(r.rawTS,r.val)));
+  const flowMap=new Map();
+  flowFiles.forEach(f=>f.records.forEach(r=>flowMap.set(r.rawTS,r.val)));
+  const merged=[];
+  supFiles.forEach(f=>f.records.forEach(r=>{
+    const ret=retMap.get(r.rawTS);
+    if(ret===undefined) return;
+    merged.push({t:r.t, sup:r.val, ret, flow:flowMap.has(r.rawTS)?flowMap.get(r.rawTS):NaN});
+  }));
+  if(!merged.length) return {err:'Supply and return files don\'t have matching timestamps — drop files from the same date range.'};
+  const allCols=[...(supFiles[0].allCols||[]),...(retFiles[0].allCols||[])];
+  return {records:merged, cols:{sup:supFiles[0].cols.val, ret:retFiles[0].cols.val, flow:null}, allCols};
 }
 function analyzeTrend(records){
   if(!records||records.length<3) return {error:'Not enough rows to analyze.'};
@@ -2042,13 +2115,22 @@ function renderLDC(tr){
 setupDrop('trendDrop','trendFile',async(files,d)=>{
   try{
     setMsg('trendOutMsg','Analyzing '+files.length+' file(s)…');
-    // Each file maps its own header → records, so mixed column orders merge safely
-    const all=[]; let cols=null, allCols=null; const errs=[];
+    const parsed=[]; const errs=[];
     for(const file of files){
-      let rows; try{ rows=parseCSV(await readFile(file)); }catch(_){ errs.push(file.name); continue; }
+      let rows; try{ rows=parseCSV(await readFile(file)); }catch(_){ errs.push(file.name+' — read error'); continue; }
       const ex=extractTrendRecords(rows);
       if(ex.err){ errs.push(file.name+' — '+ex.err); continue; }
-      all.push.apply(all,ex.records); cols=cols||ex.cols; allCols=allCols||ex.allCols;
+      ex.filename=file.name; parsed.push(ex);
+    }
+    let all=[], cols=null, allCols=null;
+    // Multi-column files: concat records directly
+    parsed.filter(p=>!p.isBMS).forEach(p=>{ all.push.apply(all,p.records); cols=cols||p.cols; allCols=allCols||p.allCols; });
+    // BMS single-value files: merge supply+return by timestamp
+    const bmsFiles=parsed.filter(p=>p.isBMS);
+    if(bmsFiles.length){
+      const merged=mergeBMSFiles(bmsFiles);
+      if(merged.err){ errs.push(merged.err); }
+      else{ all.push.apply(all,merged.records); cols=cols||merged.cols; allCols=allCols||merged.allCols; }
     }
     if(all.length<3){
       setMsg('trendOutMsg', errs.length?('Could not read: '+errs.join('; ')):'Not enough rows to analyze.','bad');
