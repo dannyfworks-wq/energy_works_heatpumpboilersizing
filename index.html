@@ -2111,8 +2111,10 @@ const WS_KEY='hpsizer_ws_id';     // connected cloud workspace id (absent = loca
 let CLOUD_ID=null;                 // current cloud workspace id, or null = local only
 let _asTimer=null,_cloudTimer=null;
 let _dbEditCount=0;                // increments on explicit project/scenario add/delete
+let _savedAt=0;                    // timestamp of the data currently loaded into DB
+let _hasLocalData=false;           // true once localStorage was successfully restored
 
-function snapshot(){ return {v:1,units:S.units,ap:DB.ap,as:DB.as,projects:DB.projects}; }
+function snapshot(){ _savedAt=Date.now(); return {v:1,units:S.units,ap:DB.ap,as:DB.as,projects:DB.projects,savedAt:_savedAt}; }
 
 function scheduleSave(){
   // 1) local cache — fast, on every change (works offline / when cloud is off)
@@ -2183,6 +2185,7 @@ function assignDB(data){
   const ap=activeProject();
   DB.as=(data.as&&ap&&ap.scenarios.find(s=>s.id===data.as))?data.as:(ap?ap.scenarios[0].id:null);
   if(data.units){ S.units=data.units; document.querySelectorAll('#usw button').forEach(b=>b.classList.toggle('on',b.dataset.u===S.units)); }
+  _savedAt=data.savedAt||0;
 }
 function applyDB(data){ assignDB(data); loadActive(); renderTabs(); }
 
@@ -2196,7 +2199,11 @@ async function cloudConnect(id, forceApply=false){
     if(r.status===200){
       let data=null; try{ data=await r.json(); }catch(_){}
       if(data&&data.projects&&data.projects.length){
-        if(forceApply||_dbEditCount===editSnap){ applyDB(data); }
+        // Apply cloud data only if: explicit user request, OR no local data exists,
+        // OR cloud is genuinely newer than what we loaded AND the user hasn't made
+        // structural edits since we started this fetch.
+        const cloudNewer=(data.savedAt||0)>_savedAt;
+        if(forceApply||!_hasLocalData||(_dbEditCount===editSnap&&cloudNewer)){ applyDB(data); }
         setCloud('synced'); return true;
       }
       await cloudPush(); return true;            // exists but empty -> seed it
@@ -2357,8 +2364,8 @@ function deleteScenario(id){
   if(DB.as===id){ DB.as=p.scenarios[Math.max(0,i-1)].id; try{ loadActive(); }catch(_){} }
   renderTabs();
 }
-function switchProject(id){ if(id===DB.ap)return; persist(); DB.ap=id; const p=activeProject(); DB.as=p.scenarios[0].id; loadActive(); renderTabs(); }
-function switchScenario(id){ if(id===DB.as)return; persist(); DB.as=id; loadActive(); renderTabs(); }
+function switchProject(id){ if(id===DB.ap)return; persist(); DB.ap=id; const p=activeProject(); DB.as=p.scenarios[0].id; try{ loadActive(); }catch(_){} renderTabs(); }
+function switchScenario(id){ if(id===DB.as)return; persist(); DB.as=id; try{ loadActive(); }catch(_){} renderTabs(); }
 function renameTab(span,kind,id){
   const cur=span.textContent;
   const inp=document.createElement('input'); inp.className='ren'; inp.value=cur;
@@ -2584,7 +2591,7 @@ document.getElementById('scenTabs').addEventListener('dblclick',e=>{ const n=e.t
   let restored=false;
   try{
     const raw=localStorage.getItem(LS_KEY);
-    if(raw){ const data=JSON.parse(raw); if(data&&data.projects&&data.projects.length){ assignDB(data); restored=true; } }
+    if(raw){ const data=JSON.parse(raw); if(data&&data.projects&&data.projects.length){ assignDB(data); restored=true; _hasLocalData=true; } }
   }catch(_){}
   if(!restored){
     const base={}; BASE_KEYS.forEach(k=>base[k]=clone(DEFAULTS[k]));
