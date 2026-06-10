@@ -2014,11 +2014,26 @@ setupDrop('trendDrop','trendFile',async(files,d)=>{
 },true);
 document.getElementById('trendApply').addEventListener('click',()=>{
   const tr=S.trend; if(!tr) return;
-  if(tr.peakBTU){ S.loadBTU=tr.peakBTU; setKnownLoad(); }
-  if(tr.swt) S.supplyF=Math.round(tr.swt);
-  if(tr.rwt) S.returnF=Math.round(tr.rwt);
+  const applied=[];
+  // Peak load
+  if(tr.peakBTU){ S.loadBTU=tr.peakBTU; setKnownLoad(); applied.push('peak load'); }
+  // Existing supply/return — trend data measures the CURRENT boiler/system output
+  if(tr.swt){ S.exSupplyF=Math.round(tr.swt); applied.push('existing supply temp'); }
+  if(tr.rwt){ S.exReturnF=Math.round(tr.rwt); applied.push('existing return temp'); }
+  // EFLH — annualise logged run-hours to a full year
+  if(tr.runHrs>0 && tr.spanHrs>0){
+    let eflh;
+    if(tr.hasFlow && tr.energyBTU && tr.peakBTU){
+      // Exact: total energy ÷ peak load gives true equivalent full-load hours for the period
+      eflh = Math.round(tr.energyBTU / tr.peakBTU * 8760 / tr.spanHrs);
+    } else {
+      // No flow data: assume 50% average load factor
+      eflh = Math.round(tr.runHrs * 0.5 * 8760 / tr.spanHrs);
+    }
+    if(eflh>0 && eflh<=8760){ S.eflh=eflh; S.runMode='eflh'; applied.push('run hours → '+eflh+' EFLH/yr'); }
+  }
   syncInputs(); render();
-  toast('Applied trend-derived load & temps');
+  toast('Applied from trend: '+applied.join(', '));
 });
 
 /* =========== 04 · proposed cut sheet =========== */
@@ -2308,7 +2323,10 @@ function showTrend(tr){
   setMsg('trendOutMsg',`<b>${parts.join(' · ')}</b>${extra}`,'ok');
   renderLDC(tr);
   ab.style.display='block';
-  ab.textContent = tr.peakBTU ? '↧ Apply load & temps to sizing' : '↧ Apply temps to sizing';
+  const hasRun = tr.runHrs>0 && tr.spanHrs>0;
+  ab.textContent = tr.peakBTU
+    ? (hasRun ? '↧ Apply load, temps & run-hrs to sizing' : '↧ Apply load & temps to sizing')
+    : (hasRun ? '↧ Apply temps & run-hrs to sizing'       : '↧ Apply temps to sizing');
 }
 function resetIntakeFiles(){
   exImgB64=null; exImgType=null; cutPdfB64=null; cutPdfName='';
