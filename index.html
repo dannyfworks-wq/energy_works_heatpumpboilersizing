@@ -1936,38 +1936,86 @@ setupDrop('billDrop','billFile',async(files,d)=>{
 },true);
 
 /* =========== 03 · trend data =========== */
-function analyzeTrend(rows){
-  if(rows.length<3) return null;
-  const H=rows[0];
-  const ci={ sup:findCol(H,['supply','swt','hws','sat','lwt','leaving']),
-             ret:findCol(H,['return','rwt','hwr','rat','ewt','entering']),
-             flow:findCol(H,['flow','gpm']),
-             time:findCol(H,['time','date','stamp']) };
-  if(ci.sup<0 || ci.ret<0) return {error:'Need supply and return temperature columns.'};
-  const loads=[]; let sumDT=0,nDT=0,sumS=0,sumR=0,nT=0,runRows=0, tFirst=null,tLast=null;
+/* Trend columns: score headers rather than first-substring-match, so
+   "OAT Temperature" can't be mistaken for a return-water column ('rat'),
+   and short codes (SWT/RWT/SAT/RAT) only match as whole words. */
+function pickCol(H,inc,tok,excl,skipIdx){
+  let best=-1,score=0;
+  H.forEach((h0,i)=>{
+    if(i===skipIdx) return;
+    const h=String(h0).toLowerCase();
+    if(excl&&excl.some(x=>h.includes(x))) return;
+    const toks=h.split(/[^a-z0-9]+/).filter(Boolean);
+    let s=0;
+    if(inc) inc.forEach(x=>{ if(h.includes(x)) s+=2; });
+    if(tok) tok.forEach(x=>{ if(toks.includes(x)) s+=3; });
+    if(s>0&&/setpoint|set point|stpt/.test(h)) s-=1;  // prefer the actual sensor over its setpoint
+    if(s>score){ score=s; best=i; }
+  });
+  return best;
+}
+const TREND_EXCL=['oat','osat','outdoor','outside','ambient','room','space','zone'];
+function extractTrendRecords(rows){
+  if(!rows||rows.length<2) return {err:'No data rows.'};
+  const H=rows[0].map(String);
+  const sup=pickCol(H,['supply','leaving'],['swt','hws','lwt','sat'],TREND_EXCL);
+  const ret=pickCol(H,['return','entering'],['rwt','hwr','ewt','rat'],TREND_EXCL,sup);
+  if(sup<0||ret<0) return {err:'Need supply and return temperature columns.'};
+  const flow=pickCol(H,['flow','gpm'],['gpm','lps']);
+  const time=pickCol(H,['time','date','stamp'],['ts']);
+  const records=[];
   for(let i=1;i<rows.length;i++){
-    const r=rows[i];
-    const s=num(r[ci.sup]), rr=num(r[ci.ret]); const fl=ci.flow>=0?num(r[ci.flow]):NaN;
-    if(ci.time>=0){ const t=Date.parse(r[ci.time]); if(!isNaN(t)){ if(tFirst===null)tFirst=t; tLast=t; } }
-    if(isNaN(s)||isNaN(rr)) continue;
-    const dt=s-rr; sumS+=s; sumR+=rr; nT++;
+    const r=rows[i]; if(!r||r.length<2) continue;
+    let t=null;
+    if(time>=0){ const v=Date.parse(r[time]); if(!isNaN(v)) t=v; }
+    records.push({t,sup:num(r[sup]),ret:num(r[ret]),flow:flow>=0?num(r[flow]):NaN});
+  }
+  return {records,cols:{sup:H[sup],ret:H[ret],flow:flow>=0?H[flow]:null}};
+}
+function analyzeTrend(records){
+  if(!records||records.length<3) return {error:'Not enough rows to analyze.'};
+  // each file maps its own header, so multi-file batches sort into one timeline
+  const timed=records.reduce((a,r)=>a+(r.t!=null?1:0),0);
+  if(timed>=2) records=records.slice().sort((a,b)=>(a.t==null)-(b.t==null)||(a.t||0)-(b.t||0));
+  // sanity pass: are these plausible hydronic water temps, and what unit?
+  let sS=0,n=0;
+  records.forEach(r=>{ if(!isNaN(r.sup)&&!isNaN(r.ret)){ sS+=r.sup; n++; } });
+  if(!n) return {error:'No numeric temperature rows found.'};
+  const avgRaw=sS/n;
+  let unit='F', tempsOk=true;
+  if(avgRaw<30) tempsOk=false;       // not water temps — almost certainly the wrong column
+  else if(avgRaw<60) unit='C';       // 30–60 avg reads as °C hydronic (86–140°F)
+  const cv=v=> unit==='C'? v*9/5+32 : v;
+  // median sample interval (hours) — robust to gaps between files
+  let interval=1; const dts=[];
+  for(let i=1;i<records.length;i++){ const a=records[i-1].t,b=records[i].t;
+    if(a!=null&&b!=null){ const d=(b-a)/3600000; if(d>0&&d<=24) dts.push(d); } }
+  if(dts.length){ dts.sort((x,y)=>x-y); interval=dts[Math.floor(dts.length/2)]; }
+  let tFirst=null,tLast=null;
+  const loads=[]; let sumDT=0,nDT=0,sumS=0,sumR=0,nT=0,runRows=0;
+  records.forEach(r=>{
+    if(r.t!=null){ if(tFirst===null)tFirst=r.t; tLast=r.t; }
+    if(isNaN(r.sup)||isNaN(r.ret)) return;
+    const s=cv(r.sup), rr=cv(r.ret), dt=s-rr;
+    sumS+=s; sumR+=rr; nT++;
     if(dt>0.5){ sumDT+=dt; nDT++; }
+    const fl=r.flow;
     if(!isNaN(fl)&&fl>0&&dt>0){ const q=500*fl*dt; if(q>500){ loads.push(q); runRows++; } }
     else if(dt>1.5){ runRows++; }
-  }
-  if(nT===0) return {error:'No numeric temperature rows found.'};
-  let interval=1;
-  if(tFirst!==null&&tLast!==null&&rows.length>2){ const v=(tLast-tFirst)/3600000/(rows.length-2); if(v>0&&v<=24) interval=v; }
-  const spanHrs=(tFirst!==null&&tLast!==null)?(tLast-tFirst)/3600000:(rows.length-1)*interval;
+  });
+  const spanHrs=(tFirst!=null&&tLast!=null&&tLast>tFirst)?(tLast-tFirst)/3600000:(records.length-1)*interval;
   loads.sort((a,b)=>b-a);
-  const peak = loads.length? loads[Math.floor(loads.length*0.01)] : null;
-  const total = loads.reduce((a,b)=>a+b,0);
+  const peak=loads.length?loads[Math.floor(loads.length*0.01)]:null;
+  const total=loads.reduce((a,b)=>a+b,0);
+  // store a downsampled duration curve so workspace saves stay under the 1MB cap
+  let curve=loads;
+  if(loads.length>400){ curve=[]; for(let i=0;i<400;i++) curve.push(loads[Math.floor(i*(loads.length-1)/399)]); }
   return {
     hasFlow: loads.length>0,
     peakBTU: peak, maxBTU: loads.length?loads[0]:null,
     avgDT: nDT?sumDT/nDT:null, swt: sumS/nT, rwt: sumR/nT,
     runHrs: runRows*interval, spanHrs, interval,
-    energyBTU: total*interval, loads
+    energyBTU: total*interval, loads: curve, tempsOk, unit
   };
 }
 function renderLDC(tr){
@@ -1993,20 +2041,23 @@ function renderLDC(tr){
 }
 setupDrop('trendDrop','trendFile',async(files,d)=>{
   try{
-    // Merge all files: header from the first, data rows from all
-    let merged=null, totalRows=0;
+    // Each file maps its own header → records, so mixed column orders merge safely
+    const all=[]; let cols=null; const errs=[];
     for(const file of files){
-      let rows; try{ rows=parseCSV(await readFile(file)); }catch(_){ continue; }
-      if(rows.length<2) continue;
-      if(merged===null){ merged=rows; totalRows=rows.length-1; }
-      else { merged=merged.concat(rows.slice(1)); totalRows+=rows.length-1; }
+      let rows; try{ rows=parseCSV(await readFile(file)); }catch(_){ errs.push(file.name); continue; }
+      const ex=extractTrendRecords(rows);
+      if(ex.err){ errs.push(file.name+' — '+ex.err); continue; }
+      all.push.apply(all,ex.records); cols=cols||ex.cols;
     }
-    if(!merged||merged.length<3){ setMsg('trendOutMsg','Not enough rows to analyze.','bad'); return; }
-    const tr=analyzeTrend(merged);
-    if(!tr){ setMsg('trendOutMsg','Not enough rows to analyze.','bad'); return; }
+    if(all.length<3){
+      setMsg('trendOutMsg', errs.length?('Could not read: '+errs.join('; ')):'Not enough rows to analyze.','bad');
+      return;
+    }
+    const tr=analyzeTrend(all);
     if(tr.error){ setMsg('trendOutMsg',tr.error,'warn'); document.getElementById('ldcChart').style.display='none'; document.getElementById('trendApply').style.display='none'; return; }
+    tr.cols=cols;
     S.trend=tr;
-    const label=files.length===1?files[0].name:files.length+' files ('+totalRows+' rows total)';
+    const label=files.length===1?files[0].name:files.length+' files ('+all.length+' rows total)';
     d.classList.add('loaded'); d.querySelector('span').textContent='✓ '+label;
     showTrend(tr);
     persist();
@@ -2017,9 +2068,11 @@ document.getElementById('trendApply').addEventListener('click',()=>{
   const applied=[];
   // Peak load
   if(tr.peakBTU){ S.loadBTU=tr.peakBTU; setKnownLoad(); applied.push('peak load'); }
-  // Existing supply/return — trend data measures the CURRENT boiler/system output
-  if(tr.swt){ S.exSupplyF=Math.round(tr.swt); applied.push('existing supply temp'); }
-  if(tr.rwt){ S.exReturnF=Math.round(tr.rwt); applied.push('existing return temp'); }
+  // Existing supply/return — trend data measures the CURRENT boiler/system output.
+  // Skip when implausible (<60°F = wrong column matched), incl. trends saved before this check existed.
+  const tempsUsable = tr.tempsOk!==false && tr.swt>=60;
+  if(tempsUsable && tr.swt){ S.exSupplyF=Math.round(tr.swt); applied.push('existing supply temp'); }
+  if(tempsUsable && tr.rwt){ S.exReturnF=Math.round(tr.rwt); applied.push('existing return temp'); }
   // EFLH — annualise logged run-hours to a full year
   if(tr.runHrs>0 && tr.spanHrs>0){
     let eflh;
@@ -2032,6 +2085,7 @@ document.getElementById('trendApply').addEventListener('click',()=>{
     }
     if(eflh>0 && eflh<=8760){ S.eflh=eflh; S.runMode='eflh'; applied.push('run hours → '+eflh+' EFLH/yr'); }
   }
+  if(!applied.length){ toast('Nothing usable to apply — check the matched columns in the trend readout'); return; }
   syncInputs(); render();
   toast('Applied from trend: '+applied.join(', '));
 });
@@ -2309,10 +2363,22 @@ function refreshAllInputs(){
 function showTrend(tr){
   const ab=document.getElementById('trendApply'), svg=document.getElementById('ldcChart');
   if(!tr){ setMsg('trendOutMsg',''); if(svg) svg.style.display='none'; if(ab) ab.style.display='none'; return; }
+  const colStr = tr.cols
+    ? `cols: ${esc(tr.cols.sup)} / ${esc(tr.cols.ret)}${tr.cols.flow?' / '+esc(tr.cols.flow):' · no flow col'}`
+    : '';
+  if(tr.tempsOk===false || !(tr.swt>=60)){
+    setMsg('trendOutMsg',
+      `<b>Matched columns don't look like hydronic water temps</b> (avg ${f0(tr.swt)}° — hot-water loops run 100°F+). `
+      +(colStr?colStr+'. ':'')
+      +`Check the CSV headers — name the water columns clearly (e.g. "HWS Temp" / "HWR Temp") and re-drop.`,'warn');
+    if(svg) svg.style.display='none';
+    if(ab) ab.style.display='none';
+    return;
+  }
   const parts=[];
   if(tr.peakBTU) parts.push('peak ~'+f0(BTU2MBH(tr.peakBTU))+' MBH');
   if(tr.avgDT) parts.push('avg ΔT '+f1(tr.avgDT)+'°F');
-  parts.push('typ '+f0(tr.swt)+'/'+f0(tr.rwt)+'°F');
+  parts.push('typ '+f0(tr.swt)+'/'+f0(tr.rwt)+'°F'+(tr.unit==='C'?' (°C detected → converted)':''));
   parts.push(f0(tr.runHrs)+' run-hrs / '+f0(tr.spanHrs/24)+' days');
   let extra='';
   if(tr.hasFlow && S.strat==='bivalent' && tr.energyBTU>0){
@@ -2320,6 +2386,7 @@ function showTrend(tr){
     const cov=tr.loads.reduce((a,v)=>a+Math.min(v,lvl),0)/tr.loads.reduce((a,v)=>a+v,0)*100;
     extra=`<br>HP at ${S.bivPct}% of peak covers ~<b>${f0(cov)}%</b> of logged heating energy.`;
   } else if(!tr.hasFlow){ extra='<br><span style="color:var(--dim2)">No flow column → temps & hours only.</span>'; }
+  if(colStr) extra+=`<br><span style="color:var(--dim2)">${colStr}</span>`;
   setMsg('trendOutMsg',`<b>${parts.join(' · ')}</b>${extra}`,'ok');
   renderLDC(tr);
   ab.style.display='block';
