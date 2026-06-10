@@ -146,6 +146,30 @@
   .savebar .lab{font-size:12px;color:var(--dim);letter-spacing:.3px}
   .savebar .num{font-family:var(--mono);font-size:21px;color:var(--ok)}
   .savebar.neg .num{color:var(--bad)}
+  .costcard .pump{font-size:11px;color:var(--dim2);margin-top:3px;font-family:var(--mono)}
+  /* expandable calc logic */
+  .calclogic{margin-top:10px;border-radius:9px;border:1px solid var(--line);overflow:hidden}
+  .calclogic>summary{padding:8px 12px;cursor:pointer;list-style:none;font-size:11.5px;color:var(--dim);
+    letter-spacing:.3px;display:flex;align-items:center;gap:7px;background:#0b0f14;user-select:none}
+  .calclogic>summary::-webkit-details-marker{display:none}
+  .calclogic>summary::before{content:"▶";font-size:8px;color:var(--hot);transition:.15s}
+  .calclogic[open]>summary::before{content:"▼"}
+  .calclogic-body{padding:12px 14px;font-family:var(--mono);font-size:11px;line-height:1.7}
+  .calcsec{color:var(--hot);font-size:10px;letter-spacing:.8px;text-transform:uppercase;margin:8px 0 2px}
+  .calcsec:first-child{margin-top:0}
+  .calcsec.c{color:var(--cold)}
+  .calcrow{display:flex;justify-content:space-between;gap:8px;color:var(--dim2)}
+  .calcrow .cv{color:var(--txt);text-align:right;white-space:nowrap}
+  .calcrow.tot{color:var(--txt);font-weight:600;border-top:1px solid var(--line);margin-top:4px;padding-top:4px}
+  .calcsep{border-top:1px solid var(--line);margin:6px 0}
+  /* pump inputs */
+  .pumpsec{margin-top:12px;border-top:1px solid var(--line);padding-top:12px}
+  .pumpsec .pumprow{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+  .pumpsec .pumprow label{font-size:11.5px;color:var(--dim);letter-spacing:.3px}
+  .vsp-toggle{display:flex;border:1px solid var(--line2);border-radius:7px;overflow:hidden;font-family:var(--mono)}
+  .vsp-toggle button{background:#0b0f14;color:var(--dim);border:0;padding:6px 11px;cursor:pointer;font-size:11px;transition:.15s}
+  .vsp-toggle button.on{background:var(--cold);color:#001a1b}
+  .vsp-toggle button:not(.on):hover{color:var(--txt)}
 
   .actions{display:flex;gap:10px;margin-top:18px;flex-wrap:wrap}
   .btn{background:var(--panel2);border:1px solid var(--line2);color:var(--txt);padding:10px 16px;border-radius:9px;
@@ -442,9 +466,9 @@
         <div class="ihd"><span class="inum">02</span>Utility bills</div>
         <div class="ibody">
           <div class="drop" id="billDrop">
-            <input type="file" id="billFile" accept=".csv,.txt" hidden>
-            <span>⇪ Drop / choose bill CSV</span>
-            <small>date, therms, gas$, kWh, elec$</small>
+            <input type="file" id="billFile" accept=".csv,.txt" hidden multiple>
+            <span>⇪ Drop / choose bill CSV(s)</span>
+            <small>date, therms, gas$, kWh, elec$ · multiple files OK</small>
           </div>
           <div class="orline"><span>or annual totals</span></div>
           <div class="two">
@@ -466,9 +490,9 @@
         <div class="ihd"><span class="inum">03</span>Existing system trend data</div>
         <div class="ibody">
           <div class="drop" id="trendDrop">
-            <input type="file" id="trendFile" accept=".csv,.txt" hidden>
-            <span>⇪ Drop / choose BMS trend CSV</span>
-            <small>timestamp, supply °F, return °F, GPM, OAT…</small>
+            <input type="file" id="trendFile" accept=".csv,.txt" hidden multiple>
+            <span>⇪ Drop / choose BMS trend CSV(s)</span>
+            <small>timestamp, supply °F, return °F, GPM, OAT… · multiple files OK</small>
           </div>
           <div class="iout" id="trendOutMsg"></div>
           <svg class="ldc" id="ldcChart" viewBox="0 0 320 130" preserveAspectRatio="none" style="display:none"></svg>
@@ -724,11 +748,11 @@
 
         <div class="two">
           <div class="field">
-            <label>Seasonal COP <span class="u">blank = auto</span></label>
+            <label>Heat pump seasonal COP <span class="u">blank = auto (design × 1.15)</span></label>
             <input type="number" id="scop" step="0.1" placeholder="auto">
           </div>
           <div class="field">
-            <label>Boiler efficiency <span class="u">η</span></label>
+            <label>Existing boiler efficiency <span class="u">η — existing equipment</span></label>
             <input type="number" id="beff" step="0.01" value="0.82">
           </div>
         </div>
@@ -740,6 +764,19 @@
           <div class="field">
             <label>Gas <span class="u">$/therm</span></label>
             <input type="number" id="grate" step="0.05" value="1.50">
+          </div>
+        </div>
+        <div class="pumpsec">
+          <div class="pumprow">
+            <label>Pump energy <span class="u" style="color:var(--dim2)">optional — adds to HP operating cost</span></label>
+            <div class="vsp-toggle" id="vspSeg">
+              <button data-vsp="0">Fixed speed</button>
+              <button data-vsp="1" class="on">VSP</button>
+            </div>
+          </div>
+          <div class="field">
+            <label>Pump design power <span class="u">kW at full flow — leave blank to omit</span></label>
+            <input type="number" id="pumpKW" step="0.5" placeholder="e.g. 7.5 kW">
           </div>
         </div>
       </div>
@@ -811,6 +848,7 @@
         <div class="ptitle">Annual Operating Cost <span class="u" style="margin-left:auto;color:var(--dim2)">all-electric vs boiler</span></div>
         <div class="cost" id="costGrid"></div>
         <div class="note" id="costNote"></div>
+        <div id="calcLogic"></div>
       </div>
 
       <div class="panel" id="comparePanel">
@@ -847,7 +885,7 @@ const S = {
   strat:'full', bivPct:70, oversize:1.15, eachBTU:null,
   volt:480, phase:3, pf:0.88,
   runMode:'eflh', hrsDay:12, daysWk:7, weeksYr:30, loadFac:50,
-  eflh:1336, scop:null, beff:0.82, erate:0.17, grate:1.50,
+  eflh:1336, scop:null, beff:0.82, erate:0.17, grate:1.50, vsp:true, pumpKW:null,
   // ---- intake ----
   billActive:false, billTherms:null, billGas:null, billKwh:null, billElec:null, heatShare:90,
   ratedCap:null, ratedCOP:null, maxLWT:null, minSrc:null, refrig:'',
@@ -1065,9 +1103,26 @@ function costOf(r, st){
   }
   const hpKWh = (annualBTU/3412.142)/scop;
   const hpCost = hpKWh*st.erate;
-  const save = boilerCost - hpCost;
+
+  // pump energy: design kW × run-hours, VSP scales power as flow² (affinity law approx)
+  const pumpKW = (st.pumpKW && st.pumpKW>0) ? st.pumpKW : 0;
+  let pumpKWh=0, pumpNote='';
+  if(pumpKW>0){
+    const runHrs = b.runHrs;
+    if(st.vsp){
+      const lf = Math.min(1, Math.max(0.05, b.lf));
+      pumpKWh = pumpKW * runHrs * Math.pow(lf, 2.0);
+      pumpNote = `VSP — power ∝ flow² (affinity law), avg ${Math.round(lf*100)}% load`;
+    } else {
+      pumpKWh = pumpKW * runHrs;
+      pumpNote = `Fixed speed — full power all run-hours`;
+    }
+  }
+  const pumpCost = pumpKWh * st.erate;
+  const totalHpCost = hpCost + pumpCost;
+  const save = boilerCost - totalHpCost;
   const pct = boilerCost>0 ? save/boilerCost*100 : 0;
-  return {scop,annualBTU,therms,boilerCost,hpKWh,hpCost,save,pct,basisLabel,billed};
+  return {scop,annualBTU,therms,boilerCost,hpKWh,hpCost,pumpKWh,pumpCost,pumpNote,totalHpCost,save,pct,basisLabel,billed};
 }
 
 /* ---------- render ---------- */
@@ -1398,25 +1453,65 @@ function renderChart(r){
 /* ---------- operating cost ---------- */
 function renderCost(r){
   const c = costOf(r, S);
+  const si = S.units==='si';
+  const b = energyBasis(S);
+  // format large BTU values
+  const fBTU = v => v>=1e9 ? f1(v/1e9)+' billion BTU' : f0(v/1e6)+' MBH·hr';
+
   document.getElementById('costGrid').innerHTML = `
     <div class="costcard">
       <div class="h"><span class="dot" style="background:#ff9c3a"></span>Existing gas boiler${c.billed?' · billed':''}</div>
       <div class="big" style="color:#ff9c3a">${money(c.boilerCost)}<span style="font-size:12px;color:#5e6e7d">/yr</span></div>
-      <div class="ln">${f0(c.therms)} therms · η ${S.beff}</div>
+      <div class="ln">${f0(c.therms)} therms · existing efficiency η ${S.beff}</div>
     </div>
     <div class="costcard">
       <div class="h"><span class="dot" style="background:#37cfd6"></span>All-electric heat pump</div>
-      <div class="big" style="color:#37cfd6">${money(c.hpCost)}<span style="font-size:12px;color:#5e6e7d">/yr</span></div>
+      <div class="big" style="color:#37cfd6">${money(c.totalHpCost)}<span style="font-size:12px;color:#5e6e7d">/yr</span></div>
       <div class="ln">${f0(c.hpKWh)} kWh · seasonal COP ${f2(c.scop)}</div>
+      ${c.pumpKWh>0?`<div class="pump">+ ${f0(c.pumpKWh)} kWh pumping (${S.vsp?'VSP':'fixed'}) = ${money(c.pumpCost)}/yr</div>`:''}
     </div>
     <div class="savebar ${c.save<0?'neg':''}">
       <span class="lab">${c.save<0?'Annual cost increase':'Annual energy savings'} vs boiler</span>
       <span class="num">${money(Math.abs(c.save))} <span style="font-size:13px;color:#5e6e7d">(${f0(Math.abs(c.pct))}%)</span></span>
     </div>`;
+
   document.getElementById('costNote').innerHTML =
     `Basis: <b style="color:#e8eef4">${c.basisLabel}</b>${c.billed?' — boiler cost is your real billed gas, scaled to heating share':' — not continuous operation (24/7/365 = 8,760 h)'}. `
-    + 'Seasonal COP defaults to design COP × 1.15; override for your climate. '
+    + (S.scop?'SCOP is your manual override.':'Heat pump seasonal COP = design COP × 1.15 (seasonal factor); override above for your climate. ')
     + 'All-electric comparison shown — a bivalent design lands between these two. Excludes demand charges, maintenance, and incentives.';
+
+  // expandable calc logic
+  const scopNote = S.scop ? `${f2(c.scop)} (manual override)` : `${f2(c.scop)} = design COP ${f2(r.cop)} × 1.15 seasonal factor`;
+  const loadDisp = si ? f1(BTU2KW(r.loadBTU))+' kW' : f1(BTU2MBH(r.loadBTU))+' MBH';
+  document.getElementById('calcLogic').innerHTML = `
+<details class="calclogic">
+  <summary>Show calculation logic &amp; assumptions</summary>
+  <div class="calclogic-body">
+    <div class="calcsec">Existing boiler baseline</div>
+    <div class="calcrow"><span>Design heating load</span><span class="cv">${loadDisp}</span></div>
+    <div class="calcrow"><span>Run basis</span><span class="cv">${f0(b.eflh)} equiv. full-load hrs/yr</span></div>
+    <div class="calcrow"><span>Annual heat delivered</span><span class="cv">${fBTU(c.annualBTU)}/yr</span></div>
+    <div class="calcrow"><span>Existing boiler efficiency η</span><span class="cv">${S.beff} — input above</span></div>
+    <div class="calcrow"><span>Gas consumption</span><span class="cv">${fBTU(c.annualBTU)} ÷ 100,000 ÷ ${S.beff} = ${f0(c.therms)} therms/yr</span></div>
+    <div class="calcrow tot"><span>Boiler cost</span><span class="cv">${f0(c.therms)} therms × $${S.grate}/therm = ${money(c.boilerCost)}/yr</span></div>
+    <div class="calcsep"></div>
+    <div class="calcsec c">Heat pump (proposed — all-electric)</div>
+    <div class="calcrow"><span>Same heat delivered</span><span class="cv">${fBTU(c.annualBTU)}/yr</span></div>
+    <div class="calcrow"><span>Seasonal COP</span><span class="cv">${scopNote}</span></div>
+    <div class="calcrow"><span>Compressor electricity</span><span class="cv">${fBTU(c.annualBTU)} ÷ 3,412 ÷ ${f2(c.scop)} = ${f0(c.hpKWh)} kWh/yr</span></div>
+    <div class="calcrow"><span>Compressor cost</span><span class="cv">${f0(c.hpKWh)} kWh × $${S.erate}/kWh = ${money(c.hpCost)}/yr</span></div>
+    ${c.pumpKWh>0 ? `
+    <div class="calcsep"></div>
+    <div class="calcsec c">Pump energy</div>
+    <div class="calcrow"><span>Pump design power</span><span class="cv">${S.pumpKW} kW at full flow</span></div>
+    <div class="calcrow"><span>Run hours</span><span class="cv">${f0(b.runHrs)} hrs/yr</span></div>
+    <div class="calcrow"><span>Type</span><span class="cv">${c.pumpNote}</span></div>
+    <div class="calcrow"><span>Pump electricity</span><span class="cv">${f0(c.pumpKWh)} kWh/yr</span></div>
+    <div class="calcrow"><span>Pump cost</span><span class="cv">${f0(c.pumpKWh)} kWh × $${S.erate}/kWh = ${money(c.pumpCost)}/yr</span></div>` : ''}
+    <div class="calcsep"></div>
+    <div class="calcrow tot"><span>Total HP cost</span><span class="cv" style="color:var(--cold)">${money(c.totalHpCost)}/yr</span></div>
+  </div>
+</details>`;
 }
 
 /* =================== UI wiring =================== */
@@ -1472,6 +1567,8 @@ bindNum('eta','eta'); bindDeltaTemp('condA','condA'); bindDeltaTemp('evapA','eva
 bindNum('bivPct','bivPct'); bindNum('oversize','oversize');
 bindNum('volt','volt'); bindNum('pf','pf');
 bindNum('eflh','eflh'); bindNum('beff','beff'); bindNum('erate','erate'); bindNum('grate','grate');
+document.getElementById('pumpKW').addEventListener('input',e=>{ const v=parseFloat(e.target.value); S.pumpKW=isNaN(v)?null:v; render(); });
+document.getElementById('vspSeg').addEventListener('click',e=>{ const b=e.target.closest('[data-vsp]'); if(b){ S.vsp=b.dataset.vsp==='1'; [...document.getElementById('vspSeg').children].forEach(x=>x.classList.toggle('on',x===b)); render(); } });
 bindNum('hrsDay','hrsDay'); bindNum('daysWk','daysWk'); bindNum('weeksYr','weeksYr'); bindNum('loadFac','loadFac');
 document.getElementById('phase').addEventListener('change',e=>{S.phase=+e.target.value;render();});
 document.getElementById('scop').addEventListener('input',e=>{
@@ -1631,13 +1728,20 @@ function readFile(file){ return new Promise((res,rej)=>{ const r=new FileReader(
 function readDataURL(file){ return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(String(r.result).split(',')[1]); r.onerror=()=>rej(r.error); r.readAsDataURL(file); }); }
 
 /* ---- drag & drop wiring ---- */
-function setupDrop(dropId,inputId,onFile){
+function setupDrop(dropId,inputId,onFile,multi=false){
   const d=document.getElementById(dropId), inp=document.getElementById(inputId);
-  d.addEventListener('click',()=>inp.click());
-  inp.addEventListener('change',()=>{ if(inp.files[0]) onFile(inp.files[0],d); });
+  if(multi) inp.multiple=true;
+  d.addEventListener('click',()=>{ inp.value=''; inp.click(); });
+  inp.addEventListener('change',()=>{
+    const files=[...inp.files]; if(!files.length) return;
+    onFile(multi?files:files[0],d);
+  });
   ['dragenter','dragover'].forEach(ev=>d.addEventListener(ev,e=>{e.preventDefault();d.classList.add('over');}));
   ['dragleave','drop'].forEach(ev=>d.addEventListener(ev,e=>{e.preventDefault();d.classList.remove('over');}));
-  d.addEventListener('drop',e=>{ const f=e.dataTransfer.files[0]; if(f) onFile(f,d); });
+  d.addEventListener('drop',e=>{
+    const files=[...e.dataTransfer.files]; if(!files.length) return;
+    onFile(multi?files:files[0],d);
+  });
 }
 function setMsg(id,html,cls){ const e=document.getElementById(id); e.className='iout'+(cls?' '+cls:''); e.innerHTML=html; }
 function setVal2(id,v){ const e=document.getElementById(id); if(e) e.value=(v==null||!isFinite(v))?'':(+(+v).toFixed(2)); }
@@ -1802,27 +1906,34 @@ function applyBills(){
   render();
 }
 document.getElementById('billApply').addEventListener('click',applyBills);
-setupDrop('billDrop','billFile',async(file,d)=>{
+setupDrop('billDrop','billFile',async(files,d)=>{
   try{
-    const rows=parseCSV(await readFile(file)); if(rows.length<2) throw 0;
-    const H=rows[0];
-    const ci={ th:findCol(H,['therm']), ccf:findCol(H,['ccf','mcf']), g$:findCol(H,['gas cost','gas $','gas amount','gas charge','gas']),
-               kwh:findCol(H,['kwh']), e$:findCol(H,['elec cost','elec $','electric cost','electric $','elec amount','elec charge']) };
-    let th=0,g=0,kw=0,e=0;
-    for(let i=1;i<rows.length;i++){
-      const r=rows[i];
-      if(ci.th>=0 && !isNaN(num(r[ci.th]))) th+=num(r[ci.th]);
-      else if(ci.ccf>=0 && !isNaN(num(r[ci.ccf]))) th+=num(r[ci.ccf])*1.037; // CCF→therm approx
-      if(ci.g$>=0 && !isNaN(num(r[ci.g$]))) g+=num(r[ci.g$]);
-      if(ci.kwh>=0 && !isNaN(num(r[ci.kwh]))) kw+=num(r[ci.kwh]);
-      if(ci.e$>=0 && !isNaN(num(r[ci.e$]))) e+=num(r[ci.e$]);
+    let th=0,g=0,kw=0,e=0,totalRows=0,parsed=0;
+    for(const file of files){
+      let rows; try{ rows=parseCSV(await readFile(file)); }catch(_){ continue; }
+      if(rows.length<2) continue;
+      parsed++;
+      const H=rows[0];
+      const ci={ th:findCol(H,['therm']), ccf:findCol(H,['ccf','mcf']), g$:findCol(H,['gas cost','gas $','gas amount','gas charge','gas']),
+                 kwh:findCol(H,['kwh']), e$:findCol(H,['elec cost','elec $','electric cost','electric $','elec amount','elec charge']) };
+      for(let i=1;i<rows.length;i++){
+        const r=rows[i];
+        if(ci.th>=0 && !isNaN(num(r[ci.th]))) th+=num(r[ci.th]);
+        else if(ci.ccf>=0 && !isNaN(num(r[ci.ccf]))) th+=num(r[ci.ccf])*1.037;
+        if(ci.g$>=0 && !isNaN(num(r[ci.g$]))) g+=num(r[ci.g$]);
+        if(ci.kwh>=0 && !isNaN(num(r[ci.kwh]))) kw+=num(r[ci.kwh]);
+        if(ci.e$>=0 && !isNaN(num(r[ci.e$]))) e+=num(r[ci.e$]);
+        totalRows++;
+      }
     }
+    if(parsed===0) throw 0;
     if(th) setVal2('billTherms',th); if(g) setVal2('billGas',g);
     if(kw) setVal2('billKwh',kw); if(e) setVal2('billElec',e);
-    d.classList.add('loaded'); d.querySelector('span').textContent='✓ '+file.name+' ('+(rows.length-1)+' rows)';
-    setMsg('billOutMsg',`Summed ${rows.length-1} rows. Review totals and hit Analyze & apply.`,'ok');
-  }catch(err){ setMsg('billOutMsg','Could not parse that CSV — expected headers like date, therms, gas$, kWh, elec$.','bad'); }
-});
+    const label=files.length===1?files[0].name:files.length+' files';
+    d.classList.add('loaded'); d.querySelector('span').textContent='✓ '+label+' ('+totalRows+' rows)';
+    setMsg('billOutMsg',`Summed ${totalRows} rows${files.length>1?' across '+files.length+' files':''}. Review totals and hit Analyze & apply.`,'ok');
+  }catch(err){ setMsg('billOutMsg','Could not parse — expected headers like date, therms, gas$, kWh, elec$.','bad'); }
+},true);
 
 /* =========== 03 · trend data =========== */
 function analyzeTrend(rows){
@@ -1880,18 +1991,27 @@ function renderLDC(tr){
   g+=`<text x="${(x0+x1)/2}" y="${H-4}" fill="#5e6e7d" font-size="8" text-anchor="middle">% of logged time load exceeded · MBH</text>`;
   svg.innerHTML=g; svg.style.display='block';
 }
-setupDrop('trendDrop','trendFile',async(file,d)=>{
+setupDrop('trendDrop','trendFile',async(files,d)=>{
   try{
-    const rows=parseCSV(await readFile(file));
-    const tr=analyzeTrend(rows);
+    // Merge all files: header from the first, data rows from all
+    let merged=null, totalRows=0;
+    for(const file of files){
+      let rows; try{ rows=parseCSV(await readFile(file)); }catch(_){ continue; }
+      if(rows.length<2) continue;
+      if(merged===null){ merged=rows; totalRows=rows.length-1; }
+      else { merged=merged.concat(rows.slice(1)); totalRows+=rows.length-1; }
+    }
+    if(!merged||merged.length<3){ setMsg('trendOutMsg','Not enough rows to analyze.','bad'); return; }
+    const tr=analyzeTrend(merged);
     if(!tr){ setMsg('trendOutMsg','Not enough rows to analyze.','bad'); return; }
     if(tr.error){ setMsg('trendOutMsg',tr.error,'warn'); document.getElementById('ldcChart').style.display='none'; document.getElementById('trendApply').style.display='none'; return; }
     S.trend=tr;
-    d.classList.add('loaded'); d.querySelector('span').textContent='✓ '+file.name;
+    const label=files.length===1?files[0].name:files.length+' files ('+totalRows+' rows total)';
+    d.classList.add('loaded'); d.querySelector('span').textContent='✓ '+label;
     showTrend(tr);
     persist();
   }catch(err){ setMsg('trendOutMsg','Could not parse that CSV.','bad'); }
-});
+},true);
 document.getElementById('trendApply').addEventListener('click',()=>{
   const tr=S.trend; if(!tr) return;
   if(tr.peakBTU){ S.loadBTU=tr.peakBTU; setKnownLoad(); }
@@ -1958,7 +2078,7 @@ let _uid=0; const uid = () => 'id'+Date.now().toString(36)+(_uid++);
 function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
 const BASE_KEYS = ['location','known','loadBTU','gpm','runMode','hrsDay','daysWk','weeksYr','loadFac','eflh',
-  'beff','erate','grate','billActive','billTherms','billGas','billKwh','billElec','heatShare','trend',
+  'beff','erate','grate','vsp','pumpKW','billActive','billTherms','billGas','billKwh','billElec','heatShare','trend',
   'exMfg','exModel','exSerial','exOut','exEff','exYear',
   'exSupplyF','exReturnF','roomF','emitter','exQty'];
 const SCEN_KEYS = ['src','sourceF','supplyF','returnF','eta','condA','evapA','strat','bivPct','oversize','eachBTU',
@@ -1967,7 +2087,7 @@ const SCEN_KEYS = ['src','sourceF','supplyF','returnF','eta','condA','evapA','st
 // raw intake fields kept in sync DOM<->S in their native units
 const RAW=[['exMfg','t'],['exModel','t'],['exSerial','t'],['exOut','n'],['exEff','n'],['exYear','n'],['exQty','n'],
   ['billTherms','n'],['billGas','n'],['billKwh','n'],['billElec','n'],['heatShare','n'],
-  ['ratedCap','n'],['ratedCOP','n'],['maxLWT','n'],['minSrc','n'],['refrig','t']];
+  ['ratedCap','n'],['ratedCOP','n'],['maxLWT','n'],['minSrc','n'],['refrig','t'],['pumpKW','n']];
 function readRawFields(){
   RAW.forEach(([id,t])=>{ const el=document.getElementById(id); if(!el) return;
     if(t==='t'){ S[id]=el.value.trim(); }
@@ -1990,6 +2110,7 @@ const LS_KEY='hpsizer_db';        // local cache of the active workspace
 const WS_KEY='hpsizer_ws_id';     // connected cloud workspace id (absent = local only)
 let CLOUD_ID=null;                 // current cloud workspace id, or null = local only
 let _asTimer=null,_cloudTimer=null;
+let _dbEditCount=0;                // increments on explicit project/scenario add/delete
 
 function snapshot(){ return {v:1,units:S.units,ap:DB.ap,as:DB.as,projects:DB.projects}; }
 
@@ -2065,15 +2186,19 @@ function assignDB(data){
 }
 function applyDB(data){ assignDB(data); loadActive(); renderTabs(); }
 
-async function cloudConnect(id){
+async function cloudConnect(id, forceApply=false){
   CLOUD_ID=id; try{ localStorage.setItem(WS_KEY,id); }catch(_){}
   setCloud('loading');
+  const editSnap=_dbEditCount; // snapshot before async — if user adds/deletes projects while we fetch, we won't clobber them
   try{
     const r=await cloudFetch('GET',id);
     if(r.status===501){ setCloud('error','Cloud not set up on the server yet — see setup steps'); return false; }
     if(r.status===200){
       let data=null; try{ data=await r.json(); }catch(_){}
-      if(data&&data.projects&&data.projects.length){ applyDB(data); setCloud('synced'); return true; }
+      if(data&&data.projects&&data.projects.length){
+        if(forceApply||_dbEditCount===editSnap){ applyDB(data); }
+        setCloud('synced'); return true;
+      }
       await cloudPush(); return true;            // exists but empty -> seed it
     }
     if(r.status===404){ await cloudPush(); return true; }   // brand-new -> seed it
@@ -2103,7 +2228,7 @@ function initCloudUI(){
   const openShared=async()=>{
     const id=parseWsId(input.value);
     if(!id){ toast('Paste a valid share link or ID'); return; }
-    const ok=await cloudConnect(id);
+    const ok=await cloudConnect(id, true); // forceApply — user explicitly chose to load this workspace
     if(ok){ row.style.display='none'; input.value=''; toast('Opened shared workspace'); }
   };
   document.getElementById('cloudOpenGo').addEventListener('click',openShared);
@@ -2152,6 +2277,8 @@ function refreshAllInputs(){
   setSeg('runSeg','r',S.runMode);
   document.getElementById('eflhMode').style.display=S.runMode==='eflh'?'block':'none';
   document.getElementById('schedMode').style.display=S.runMode==='sched'?'block':'none';
+  // VSP toggle
+  const vspEl=document.getElementById('vspSeg'); if(vspEl) [...vspEl.children].forEach(b=>b.classList.toggle('on',b.dataset.vsp===(S.vsp?'1':'0')));
   const ls=document.getElementById('loc'); if(ls) ls.value=S.location;
   refreshLocHint();
   showTrend(S.trend);
@@ -2181,42 +2308,53 @@ function resetIntakeFiles(){
   const pv=document.getElementById('exImgPreview'); if(pv) pv.style.display='none';
   const ce=document.getElementById('cutExtract'); if(ce) ce.style.display='none';
   setMsg('exOutMsg',''); setMsg('billOutMsg',''); setMsg('cutOutMsg','');
-  const defs={exImgDrop:'⇪ Photo of nameplate / unit', billDrop:'⇪ Drop / choose bill CSV',
-    trendDrop:'⇪ Drop / choose BMS trend CSV', cutDrop:'⇪ Drop / choose cut-sheet PDF'};
+  const defs={exImgDrop:'⇪ Photo of nameplate / unit', billDrop:'⇪ Drop / choose bill CSV(s)',
+    trendDrop:'⇪ Drop / choose BMS trend CSV(s)', cutDrop:'⇪ Drop / choose cut-sheet PDF'};
   Object.keys(defs).forEach(id=>{ const d=document.getElementById(id); if(d){ d.classList.remove('loaded'); const s=d.querySelector('span'); if(s) s.textContent=defs[id]; } });
 }
 
 function newScenObj(name){ const o={id:uid(),name}; SCEN_KEYS.forEach(k=>o[k]=clone(DEFAULTS[k])); return o; }
 function newProject(){
+  _dbEditCount++;
   persist();
   const base={}; BASE_KEYS.forEach(k=>base[k]=clone(DEFAULTS[k]));
   const sc=newScenObj('Scenario 1');
   const p={id:uid(),name:'Project '+(DB.projects.length+1),base,scenarios:[sc]};
-  DB.projects.push(p); DB.ap=p.id; DB.as=sc.id; loadActive(); renderTabs();
+  DB.projects.push(p); DB.ap=p.id; DB.as=sc.id;
+  try{ loadActive(); }catch(_){}
+  renderTabs();
 }
 function addScenario(){
+  _dbEditCount++;
   persist(); const p=activeProject(); if(!p)return;
   const sc=newScenObj('Scenario '+(p.scenarios.length+1));
-  p.scenarios.push(sc); DB.as=sc.id; loadActive(); renderTabs();
+  p.scenarios.push(sc); DB.as=sc.id;
+  try{ loadActive(); }catch(_){}
+  renderTabs();
 }
 function duplicateScenario(){
+  _dbEditCount++;
   persist(); const p=activeProject(); const cur=activeScenario(); if(!cur)return;
   const cp=clone(cur); cp.id=uid(); cp.name=cur.name+' (copy)';
-  p.scenarios.push(cp); DB.as=cp.id; loadActive(); renderTabs();
+  p.scenarios.push(cp); DB.as=cp.id;
+  try{ loadActive(); }catch(_){}
+  renderTabs();
 }
 function deleteProject(id){
   if(DB.projects.length<=1){ toast('Keep at least one project'); return; }
   const i=DB.projects.findIndex(p=>p.id===id); if(i<0)return;
+  _dbEditCount++;
   DB.projects.splice(i,1);
-  if(DB.ap===id){ const np=DB.projects[Math.max(0,i-1)]; DB.ap=np.id; DB.as=np.scenarios[0].id; loadActive(); }
+  if(DB.ap===id){ const np=DB.projects[Math.max(0,i-1)]; DB.ap=np.id; DB.as=np.scenarios[0].id; try{ loadActive(); }catch(_){} }
   renderTabs();
 }
 function deleteScenario(id){
   const p=activeProject(); if(!p)return;
   if(p.scenarios.length<=1){ toast('A project needs at least one scenario'); return; }
   const i=p.scenarios.findIndex(s=>s.id===id); if(i<0)return;
+  _dbEditCount++;
   p.scenarios.splice(i,1);
-  if(DB.as===id){ DB.as=p.scenarios[Math.max(0,i-1)].id; loadActive(); }
+  if(DB.as===id){ DB.as=p.scenarios[Math.max(0,i-1)].id; try{ loadActive(); }catch(_){} }
   renderTabs();
 }
 function switchProject(id){ if(id===DB.ap)return; persist(); DB.ap=id; const p=activeProject(); DB.as=p.scenarios[0].id; loadActive(); renderTabs(); }
